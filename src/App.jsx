@@ -5690,6 +5690,12 @@ function ReceptionQueue({ onOpenChart, checkInFor, setCheckInFor }) {
   const serving = todayQueue.filter((q) => q.status === 'In Consultation');
   const done = todayQueue.filter((q) => q.status === 'Completed');
 
+  /* The single now-serving board shows the lowest number currently in a room,
+     with the head of the waiting line beneath it. */
+  const nowServing = serving[0] ?? null;
+  const upNext = waiting[0] ?? null;
+  const servingDoctor = nowServing ? findBy(state.doctors, nowServing.doctorId) : null;
+
   const todayAppts = state.appointments
     .filter((a) => a.date === ymd() && !['Completed', 'Cancelled', 'Checked In'].includes(a.status))
     .sort((a, b) => a.time.localeCompare(b.time));
@@ -5715,28 +5721,44 @@ function ReceptionQueue({ onOpenChart, checkInFor, setCheckInFor }) {
             </button>
           </div>
         </div>
-        <div className="grid gap-px bg-slate-100 sm:grid-cols-3">
-          {state.doctors.slice(0, 3).map((d) => {
-            const current = serving.find((q) => q.doctorId === d.id);
-            const next = waiting.find((q) => q.doctorId === d.id);
-            return (
-              <div key={d.id} className="bg-white px-4 py-3">
-                <p className="truncate text-xs font-semibold text-slate-500">
-                  Dr. {d.name.split(' ').slice(-1)} · {d.room}
-                </p>
-                <p className={cx('nums text-3xl font-bold leading-tight', current ? 'text-sky-700' : 'text-slate-300')}>
-                  {current ? `#${current.number}` : '—'}
+        {/* One board for the whole clinic: whoever is in a room right now, and who
+            is up next. `serving` and `waiting` are already ordered by queue number. */}
+        <div className="flex flex-wrap items-center gap-x-8 gap-y-4 px-5 py-4">
+          <div className="min-w-0">
+            <p className={cx('nums text-5xl font-bold leading-none', nowServing ? 'text-sky-700' : 'text-slate-300')}>
+              {nowServing ? `#${nowServing.number}` : '—'}
+            </p>
+            {nowServing ? (
+              <>
+                <p className="mt-1.5 flex flex-wrap items-center gap-2 text-sm font-semibold text-slate-900">
+                  <span className="truncate">{patientName(findBy(state.patients, nowServing.patientId))}</span>
+                  {nowServing.priority && <Badge tone="bg-rose-100 text-rose-700">Priority</Badge>}
                 </p>
                 <p className="truncate text-xs text-slate-500">
-                  {current
-                    ? patientName(findBy(state.patients, current.patientId))
-                    : next
-                      ? `next: #${next.number} ${patientName(findBy(state.patients, next.patientId))}`
-                      : 'no one waiting'}
+                  {doctorName(servingDoctor)}
+                  {servingDoctor?.room ? ` · ${servingDoctor.room}` : ''}
+                  {nowServing.startedAt ? ` · in consultation ${fmtDuration(minsSince(nowServing.startedAt))}` : ''}
                 </p>
-              </div>
-            );
-          })}
+              </>
+            ) : (
+              <>
+                <p className="mt-1.5 text-sm font-semibold text-slate-900">No one in consultation</p>
+                <p className="text-xs text-slate-500">
+                  {waiting.length ? 'The doctor calls in the next patient from the queue.' : 'The queue is clear.'}
+                </p>
+              </>
+            )}
+          </div>
+
+          <div className="ml-auto text-right">
+            <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">Next in line</p>
+            <p className={cx('nums text-xl font-bold leading-tight', upNext ? 'text-slate-800' : 'text-slate-300')}>
+              {upNext ? `#${upNext.number}` : '—'}
+            </p>
+            <p className="truncate text-xs text-slate-500">
+              {upNext ? patientName(findBy(state.patients, upNext.patientId)) : 'nobody waiting'}
+            </p>
+          </div>
         </div>
       </section>
 
