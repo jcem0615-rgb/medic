@@ -14,19 +14,20 @@ import React, {
 } from 'react';
 import { createPortal } from 'react-dom';
 import {
-  Activity, AlertTriangle, ArrowLeft, ArrowRight, BadgeCheck, Banknote, Bell, Boxes, Calendar,
-  CalendarPlus, CheckCircle2, ChevronDown, ChevronRight, ClipboardList, Clock, CloudOff, CreditCard,
-  Download, FileText, FlaskConical, Heart, Home, Hospital, Info, LayoutGrid, LogIn, Mail, MapPin,
-  Minus, Monitor, Package, PackagePlus, PhilippinePeso, Phone, Pill, Plus, Printer, QrCode,
-  RefreshCw, Search, Settings2, Share2, ShieldCheck, Smartphone, Stethoscope, Syringe, Thermometer,
-  Trash2, TrendingUp, User, UserPlus, Users, Video, Wallet, Wifi, WifiOff, X, Zap,
+  Activity, AlertTriangle, ArrowLeft, ArrowRight, BadgeCheck, Banknote, Bell, BellRing, Boxes,
+  Calendar, CalendarClock, CalendarPlus, CheckCircle2, ChevronDown, ChevronRight, ClipboardList,
+  Clock, CloudOff, CreditCard, Download, FileText, FlaskConical, Heart, Home, Hospital, Info,
+  LayoutGrid, LogIn, Mail, MapPin, MessageSquare, Minus, Monitor, Package, PackagePlus,
+  PhilippinePeso, Phone, Pill, Plus, Printer, QrCode, RefreshCw, Search, Send, Settings2, Share2,
+  ShieldCheck, Smartphone, Stethoscope, Syringe, Thermometer, Trash2, TrendingUp, User, UserPlus,
+  Users, Video, Wallet, Wifi, WifiOff, X, Zap,
 } from 'lucide-react';
 
 /* ===== 1. Constants & utilities ================================================= */
 
 const STORE_KEY = 'mediclinic:v1';
 /* Bump whenever the state shape changes — older persisted state is discarded. */
-const SCHEMA_VERSION = 4;
+const SCHEMA_VERSION = 5;
 
 const CLINIC = {
   name: 'MediClinic Family Health Center',
@@ -89,6 +90,36 @@ const DEPARTMENTS = [
   { id: 'obgyn', label: 'OB-GYN' },
 ];
 
+/* --- Messaging policy ----------------------------------------------------------
+   Who may open a thread with whom. Patients and front-desk staff deliberately have
+   NO direct channel: clinical questions go patient→doctor, and anything the desk
+   needs to tell a patient goes through the attending doctor or the phone. The rule
+   is enforced in the reducer as well as the UI, so a crafted action can't bypass it. */
+const MESSAGING_RULES = {
+  doctor: ['patient', 'staff'],
+  patient: ['doctor'],
+  staff: ['doctor'],
+};
+
+const canMessage = (fromKind, toKind) => (MESSAGING_RULES[fromKind] ?? []).includes(toKind);
+
+/* A participant is addressed as `${kind}:${id}` wherever a flat key is handy. */
+const partyKey = (party) => (party ? `${party.kind}:${party.id}` : '');
+const samePartyAs = (a, b) => partyKey(a) === partyKey(b);
+
+const NOTIFICATION_KINDS = {
+  'follow-up': { label: 'Follow-up', icon: CalendarClock, tone: 'bg-indigo-100 text-indigo-700' },
+  appointment: { label: 'Appointment', icon: Calendar, tone: 'bg-sky-100 text-sky-700' },
+  message: { label: 'Message', icon: MessageSquare, tone: 'bg-teal-100 text-teal-700' },
+  billing: { label: 'Billing', icon: PhilippinePeso, tone: 'bg-amber-100 text-amber-800' },
+  prescription: { label: 'Prescription', icon: Pill, tone: 'bg-emerald-100 text-emerald-700' },
+};
+
+/* How far ahead of the due date a follow-up reminder starts showing up. */
+const REMINDER_LEAD_DAYS = 7;
+const daysUntil = (date) =>
+  Math.ceil((parseYmd(date).getTime() - parseYmd(ymd()).getTime()) / 86400000);
+
 /* Dosing frequencies. `perDay` drives autoQty; PRN can't be computed so it is 0. */
 const FREQUENCIES = [
   { code: 'OD', label: 'Once daily', sig: 'once a day', perDay: 1 },
@@ -105,33 +136,206 @@ const FREQUENCIES = [
 
 const ROUTES = ['PO', 'IM', 'IV', 'SC', 'Topical', 'Inhalation', 'Nebulization', 'Ophthalmic', 'Otic'];
 
-/* Short curated subset of WHO ICD-10 codes, as used on PhilHealth claim forms. */
+/* WHO ICD-10 codes grouped by chapter, as used on PhilHealth claim forms.
+   Still a working subset for outpatient family practice rather than the full
+   classification — the picker scrolls the whole list and searches code or term. */
 const ICD10 = [
-  { code: 'J00', label: 'Acute nasopharyngitis (common cold)' },
-  { code: 'J01.9', label: 'Acute sinusitis, unspecified' },
-  { code: 'J02.9', label: 'Acute pharyngitis, unspecified' },
-  { code: 'J06.9', label: 'Acute upper respiratory infection, unspecified' },
-  { code: 'J20.9', label: 'Acute bronchitis, unspecified' },
-  { code: 'J45.9', label: 'Asthma, unspecified' },
-  { code: 'A09', label: 'Gastroenteritis and colitis, presumed infectious' },
-  { code: 'A90', label: 'Dengue fever (classical dengue)' },
-  { code: 'B34.9', label: 'Viral infection, unspecified' },
-  { code: 'K29.7', label: 'Gastritis, unspecified' },
-  { code: 'K30', label: 'Functional dyspepsia' },
-  { code: 'I10', label: 'Essential (primary) hypertension' },
-  { code: 'E11.9', label: 'Type 2 diabetes mellitus without complications' },
-  { code: 'E78.5', label: 'Hyperlipidaemia, unspecified' },
-  { code: 'E66.9', label: 'Obesity, unspecified' },
-  { code: 'N39.0', label: 'Urinary tract infection, site not specified' },
-  { code: 'L30.9', label: 'Dermatitis, unspecified' },
-  { code: 'T78.4', label: 'Allergy, unspecified' },
-  { code: 'H66.9', label: 'Otitis media, unspecified' },
-  { code: 'M54.5', label: 'Low back pain' },
-  { code: 'R10.4', label: 'Other and unspecified abdominal pain' },
-  { code: 'R50.9', label: 'Fever, unspecified' },
-  { code: 'R51', label: 'Headache' },
-  { code: 'Z00.0', label: 'General medical examination' },
+  // Certain infectious and parasitic diseases
+  { code: 'A01.0', label: 'Typhoid fever', group: 'Infectious' },
+  { code: 'A08.4', label: 'Viral intestinal infection, unspecified', group: 'Infectious' },
+  { code: 'A09', label: 'Gastroenteritis and colitis, presumed infectious', group: 'Infectious' },
+  { code: 'A15.0', label: 'Pulmonary tuberculosis, confirmed', group: 'Infectious' },
+  { code: 'A16.2', label: 'Pulmonary tuberculosis, clinically diagnosed', group: 'Infectious' },
+  { code: 'A49.9', label: 'Bacterial infection, unspecified', group: 'Infectious' },
+  { code: 'A90', label: 'Dengue fever (classical dengue)', group: 'Infectious' },
+  { code: 'A91', label: 'Dengue haemorrhagic fever', group: 'Infectious' },
+  { code: 'B01.9', label: 'Varicella (chickenpox) without complication', group: 'Infectious' },
+  { code: 'B05.9', label: 'Measles without complication', group: 'Infectious' },
+  { code: 'B19.9', label: 'Viral hepatitis, unspecified', group: 'Infectious' },
+  { code: 'B26.9', label: 'Mumps without complication', group: 'Infectious' },
+  { code: 'B34.9', label: 'Viral infection, unspecified', group: 'Infectious' },
+  { code: 'B35.3', label: 'Tinea pedis (athlete’s foot)', group: 'Infectious' },
+  { code: 'B35.4', label: 'Tinea corporis', group: 'Infectious' },
+  { code: 'B37.3', label: 'Candidiasis of vulva and vagina', group: 'Infectious' },
+  { code: 'B37.9', label: 'Candidiasis, unspecified', group: 'Infectious' },
+  { code: 'B86', label: 'Scabies', group: 'Infectious' },
+  { code: 'U07.1', label: 'COVID-19, virus identified', group: 'Infectious' },
+
+  // Blood and immune
+  { code: 'D50.9', label: 'Iron deficiency anaemia, unspecified', group: 'Blood' },
+  { code: 'D64.9', label: 'Anaemia, unspecified', group: 'Blood' },
+
+  // Endocrine, nutritional and metabolic
+  { code: 'E03.9', label: 'Hypothyroidism, unspecified', group: 'Endocrine & metabolic' },
+  { code: 'E05.9', label: 'Thyrotoxicosis, unspecified', group: 'Endocrine & metabolic' },
+  { code: 'E10.9', label: 'Type 1 diabetes mellitus without complications', group: 'Endocrine & metabolic' },
+  { code: 'E11.9', label: 'Type 2 diabetes mellitus without complications', group: 'Endocrine & metabolic' },
+  { code: 'E11.6', label: 'Type 2 diabetes mellitus with other specified complications', group: 'Endocrine & metabolic' },
+  { code: 'E16.2', label: 'Hypoglycaemia, unspecified', group: 'Endocrine & metabolic' },
+  { code: 'E44.1', label: 'Mild protein-energy malnutrition', group: 'Endocrine & metabolic' },
+  { code: 'E55.9', label: 'Vitamin D deficiency, unspecified', group: 'Endocrine & metabolic' },
+  { code: 'E66.9', label: 'Obesity, unspecified', group: 'Endocrine & metabolic' },
+  { code: 'E78.0', label: 'Pure hypercholesterolaemia', group: 'Endocrine & metabolic' },
+  { code: 'E78.5', label: 'Hyperlipidaemia, unspecified', group: 'Endocrine & metabolic' },
+  { code: 'E79.0', label: 'Hyperuricaemia without arthritis or tophi', group: 'Endocrine & metabolic' },
+  { code: 'E86', label: 'Volume depletion (dehydration)', group: 'Endocrine & metabolic' },
+  { code: 'E87.6', label: 'Hypokalaemia', group: 'Endocrine & metabolic' },
+
+  // Mental and behavioural
+  { code: 'F32.9', label: 'Depressive episode, unspecified', group: 'Mental health' },
+  { code: 'F41.1', label: 'Generalized anxiety disorder', group: 'Mental health' },
+  { code: 'F41.9', label: 'Anxiety disorder, unspecified', group: 'Mental health' },
+  { code: 'F43.2', label: 'Adjustment disorder', group: 'Mental health' },
+  { code: 'F51.0', label: 'Nonorganic insomnia', group: 'Mental health' },
+
+  // Nervous system
+  { code: 'G40.9', label: 'Epilepsy, unspecified', group: 'Nervous system' },
+  { code: 'G43.9', label: 'Migraine, unspecified', group: 'Nervous system' },
+  { code: 'G44.2', label: 'Tension-type headache', group: 'Nervous system' },
+  { code: 'G47.0', label: 'Disorders of initiating and maintaining sleep', group: 'Nervous system' },
+  { code: 'G51.0', label: 'Bell palsy', group: 'Nervous system' },
+  { code: 'G56.0', label: 'Carpal tunnel syndrome', group: 'Nervous system' },
+  { code: 'G62.9', label: 'Polyneuropathy, unspecified', group: 'Nervous system' },
+
+  // Eye and ear
+  { code: 'H10.9', label: 'Conjunctivitis, unspecified', group: 'Eye & ear' },
+  { code: 'H25.9', label: 'Senile cataract, unspecified', group: 'Eye & ear' },
+  { code: 'H40.9', label: 'Glaucoma, unspecified', group: 'Eye & ear' },
+  { code: 'H52.4', label: 'Presbyopia', group: 'Eye & ear' },
+  { code: 'H60.9', label: 'Otitis externa, unspecified', group: 'Eye & ear' },
+  { code: 'H61.2', label: 'Impacted cerumen', group: 'Eye & ear' },
+  { code: 'H65.9', label: 'Nonsuppurative otitis media, unspecified', group: 'Eye & ear' },
+  { code: 'H66.9', label: 'Otitis media, unspecified', group: 'Eye & ear' },
+  { code: 'H81.1', label: 'Benign paroxysmal vertigo', group: 'Eye & ear' },
+  { code: 'H91.9', label: 'Hearing loss, unspecified', group: 'Eye & ear' },
+
+  // Circulatory
+  { code: 'I10', label: 'Essential (primary) hypertension', group: 'Circulatory' },
+  { code: 'I11.9', label: 'Hypertensive heart disease without heart failure', group: 'Circulatory' },
+  { code: 'I20.9', label: 'Angina pectoris, unspecified', group: 'Circulatory' },
+  { code: 'I21.9', label: 'Acute myocardial infarction, unspecified', group: 'Circulatory' },
+  { code: 'I25.9', label: 'Chronic ischaemic heart disease, unspecified', group: 'Circulatory' },
+  { code: 'I48', label: 'Atrial fibrillation and flutter', group: 'Circulatory' },
+  { code: 'I50.9', label: 'Heart failure, unspecified', group: 'Circulatory' },
+  { code: 'I63.9', label: 'Cerebral infarction, unspecified', group: 'Circulatory' },
+  { code: 'I83.9', label: 'Varicose veins of lower extremities', group: 'Circulatory' },
+  { code: 'I95.9', label: 'Hypotension, unspecified', group: 'Circulatory' },
+
+  // Respiratory
+  { code: 'J00', label: 'Acute nasopharyngitis (common cold)', group: 'Respiratory' },
+  { code: 'J01.9', label: 'Acute sinusitis, unspecified', group: 'Respiratory' },
+  { code: 'J02.9', label: 'Acute pharyngitis, unspecified', group: 'Respiratory' },
+  { code: 'J03.9', label: 'Acute tonsillitis, unspecified', group: 'Respiratory' },
+  { code: 'J04.0', label: 'Acute laryngitis', group: 'Respiratory' },
+  { code: 'J06.9', label: 'Acute upper respiratory infection, unspecified', group: 'Respiratory' },
+  { code: 'J11.1', label: 'Influenza with other respiratory manifestations', group: 'Respiratory' },
+  { code: 'J18.9', label: 'Pneumonia, unspecified', group: 'Respiratory' },
+  { code: 'J20.9', label: 'Acute bronchitis, unspecified', group: 'Respiratory' },
+  { code: 'J21.9', label: 'Acute bronchiolitis, unspecified', group: 'Respiratory' },
+  { code: 'J30.4', label: 'Allergic rhinitis, unspecified', group: 'Respiratory' },
+  { code: 'J32.9', label: 'Chronic sinusitis, unspecified', group: 'Respiratory' },
+  { code: 'J35.0', label: 'Chronic tonsillitis', group: 'Respiratory' },
+  { code: 'J42', label: 'Unspecified chronic bronchitis', group: 'Respiratory' },
+  { code: 'J44.9', label: 'Chronic obstructive pulmonary disease, unspecified', group: 'Respiratory' },
+  { code: 'J45.0', label: 'Predominantly allergic asthma', group: 'Respiratory' },
+  { code: 'J45.9', label: 'Asthma, unspecified', group: 'Respiratory' },
+  { code: 'J47', label: 'Bronchiectasis', group: 'Respiratory' },
+
+  // Digestive
+  { code: 'K21.0', label: 'Gastro-oesophageal reflux disease with oesophagitis', group: 'Digestive' },
+  { code: 'K21.9', label: 'Gastro-oesophageal reflux disease without oesophagitis', group: 'Digestive' },
+  { code: 'K25.9', label: 'Gastric ulcer, unspecified', group: 'Digestive' },
+  { code: 'K29.7', label: 'Gastritis, unspecified', group: 'Digestive' },
+  { code: 'K30', label: 'Functional dyspepsia', group: 'Digestive' },
+  { code: 'K40.9', label: 'Inguinal hernia without obstruction or gangrene', group: 'Digestive' },
+  { code: 'K52.9', label: 'Noninfective gastroenteritis and colitis', group: 'Digestive' },
+  { code: 'K58.9', label: 'Irritable bowel syndrome without diarrhoea', group: 'Digestive' },
+  { code: 'K59.0', label: 'Constipation', group: 'Digestive' },
+  { code: 'K64.9', label: 'Haemorrhoids, unspecified', group: 'Digestive' },
+  { code: 'K76.0', label: 'Fatty (change of) liver, not elsewhere classified', group: 'Digestive' },
+  { code: 'K80.2', label: 'Calculus of gallbladder without cholecystitis', group: 'Digestive' },
+  { code: 'K92.2', label: 'Gastrointestinal haemorrhage, unspecified', group: 'Digestive' },
+
+  // Skin
+  { code: 'L01.0', label: 'Impetigo', group: 'Skin' },
+  { code: 'L02.9', label: 'Cutaneous abscess, furuncle and carbuncle', group: 'Skin' },
+  { code: 'L03.9', label: 'Cellulitis, unspecified', group: 'Skin' },
+  { code: 'L20.9', label: 'Atopic dermatitis, unspecified', group: 'Skin' },
+  { code: 'L23.9', label: 'Allergic contact dermatitis, unspecified cause', group: 'Skin' },
+  { code: 'L29.9', label: 'Pruritus, unspecified', group: 'Skin' },
+  { code: 'L30.9', label: 'Dermatitis, unspecified', group: 'Skin' },
+  { code: 'L40.9', label: 'Psoriasis, unspecified', group: 'Skin' },
+  { code: 'L50.9', label: 'Urticaria, unspecified', group: 'Skin' },
+  { code: 'L70.0', label: 'Acne vulgaris', group: 'Skin' },
+
+  // Musculoskeletal
+  { code: 'M06.9', label: 'Rheumatoid arthritis, unspecified', group: 'Musculoskeletal' },
+  { code: 'M10.9', label: 'Gout, unspecified', group: 'Musculoskeletal' },
+  { code: 'M15.9', label: 'Polyarthrosis, unspecified', group: 'Musculoskeletal' },
+  { code: 'M17.9', label: 'Gonarthrosis (osteoarthritis of knee), unspecified', group: 'Musculoskeletal' },
+  { code: 'M19.9', label: 'Arthrosis, unspecified', group: 'Musculoskeletal' },
+  { code: 'M25.5', label: 'Pain in joint', group: 'Musculoskeletal' },
+  { code: 'M54.2', label: 'Cervicalgia (neck pain)', group: 'Musculoskeletal' },
+  { code: 'M54.5', label: 'Low back pain', group: 'Musculoskeletal' },
+  { code: 'M54.9', label: 'Dorsalgia, unspecified', group: 'Musculoskeletal' },
+  { code: 'M75.0', label: 'Adhesive capsulitis of shoulder', group: 'Musculoskeletal' },
+  { code: 'M79.1', label: 'Myalgia', group: 'Musculoskeletal' },
+
+  // Genitourinary
+  { code: 'N10', label: 'Acute tubulo-interstitial nephritis (pyelonephritis)', group: 'Genitourinary' },
+  { code: 'N18.9', label: 'Chronic kidney disease, unspecified', group: 'Genitourinary' },
+  { code: 'N20.0', label: 'Calculus of kidney', group: 'Genitourinary' },
+  { code: 'N30.0', label: 'Acute cystitis', group: 'Genitourinary' },
+  { code: 'N39.0', label: 'Urinary tract infection, site not specified', group: 'Genitourinary' },
+  { code: 'N40', label: 'Hyperplasia of prostate', group: 'Genitourinary' },
+  { code: 'N76.0', label: 'Acute vaginitis', group: 'Genitourinary' },
+  { code: 'N91.2', label: 'Amenorrhoea, unspecified', group: 'Genitourinary' },
+  { code: 'N92.0', label: 'Excessive and frequent menstruation', group: 'Genitourinary' },
+  { code: 'N94.6', label: 'Dysmenorrhoea, unspecified', group: 'Genitourinary' },
+
+  // Pregnancy
+  { code: 'O21.0', label: 'Mild hyperemesis gravidarum', group: 'Pregnancy' },
+  { code: 'O23.4', label: 'Unspecified urinary tract infection in pregnancy', group: 'Pregnancy' },
+
+  // Symptoms and signs
+  { code: 'R05', label: 'Cough', group: 'Symptoms & signs' },
+  { code: 'R06.0', label: 'Dyspnoea', group: 'Symptoms & signs' },
+  { code: 'R07.4', label: 'Chest pain, unspecified', group: 'Symptoms & signs' },
+  { code: 'R10.1', label: 'Pain localized to upper abdomen', group: 'Symptoms & signs' },
+  { code: 'R10.4', label: 'Other and unspecified abdominal pain', group: 'Symptoms & signs' },
+  { code: 'R11', label: 'Nausea and vomiting', group: 'Symptoms & signs' },
+  { code: 'R21', label: 'Rash and other nonspecific skin eruption', group: 'Symptoms & signs' },
+  { code: 'R35', label: 'Polyuria', group: 'Symptoms & signs' },
+  { code: 'R42', label: 'Dizziness and giddiness', group: 'Symptoms & signs' },
+  { code: 'R50.9', label: 'Fever, unspecified', group: 'Symptoms & signs' },
+  { code: 'R51', label: 'Headache', group: 'Symptoms & signs' },
+  { code: 'R53', label: 'Malaise and fatigue', group: 'Symptoms & signs' },
+  { code: 'R55', label: 'Syncope and collapse', group: 'Symptoms & signs' },
+  { code: 'R60.0', label: 'Localized oedema', group: 'Symptoms & signs' },
+  { code: 'R63.4', label: 'Abnormal weight loss', group: 'Symptoms & signs' },
+
+  // Injury and external causes
+  { code: 'T14.0', label: 'Superficial injury of unspecified body region', group: 'Injury' },
+  { code: 'T14.1', label: 'Open wound of unspecified body region', group: 'Injury' },
+  { code: 'T14.3', label: 'Dislocation, sprain and strain of unspecified body region', group: 'Injury' },
+  { code: 'T30.0', label: 'Burn of unspecified body region, unspecified degree', group: 'Injury' },
+  { code: 'T63.4', label: 'Venom of other arthropods (insect bite)', group: 'Injury' },
+  { code: 'T78.4', label: 'Allergy, unspecified', group: 'Injury' },
+
+  // Factors influencing health status
+  { code: 'Z00.0', label: 'General medical examination', group: 'Health services' },
+  { code: 'Z00.1', label: 'Routine child health examination', group: 'Health services' },
+  { code: 'Z02.7', label: 'Issue of medical certificate', group: 'Health services' },
+  { code: 'Z20.3', label: 'Contact with and exposure to rabies', group: 'Health services' },
+  { code: 'Z23', label: 'Need for immunization against single bacterial disease', group: 'Health services' },
+  { code: 'Z30.0', label: 'General counselling and advice on contraception', group: 'Health services' },
+  { code: 'Z34.9', label: 'Supervision of normal pregnancy, unspecified', group: 'Health services' },
+  { code: 'Z71.3', label: 'Dietary counselling and surveillance', group: 'Health services' },
+  { code: 'Z76.0', label: 'Issue of repeat prescription', group: 'Health services' },
 ];
+
+/* Chapter order for the grouped picker. */
+const ICD10_GROUPS = [...new Set(ICD10.map((d) => d.group))];
 
 /* Keyword-based allergy screening. No interaction database — see CLAUDE.md gaps. */
 const ALLERGY_RULES = [
@@ -547,6 +751,101 @@ function buildSeed() {
     { id: 'I-0015', name: 'Losartan', strength: '50 mg', form: 'Tablet', unit: 'tab', category: 'Antihypertensive', price: 10, stock: 250, reorderLevel: 90, brand: 'generic' },
     { id: 'I-0016', name: 'Amlodipine', strength: '5 mg', form: 'Tablet', unit: 'tab', category: 'Antihypertensive', price: 7, stock: 230, reorderLevel: 90, brand: 'generic' },
     { id: 'I-0017', name: 'Oral rehydration salts', strength: '20.5 g', form: 'Sachet', unit: 'sachet', category: 'Electrolyte', price: 18, stock: 86, reorderLevel: 30, brand: 'generic' },
+    /* --- the rest of the clinic formulary -------------------------------------
+       Generic names only (R.A. 6675). Strengths carry their own unit (mg, g, mcg,
+       % or mg/mL) and each generic may appear as several variants — tablet,
+       capsule, syrup, suspension, drops, nebule, ampule, cream and so on. */
+    { id: 'I-0018', name: 'Paracetamol', strength: '250 mg/5 mL', form: 'Syrup (60 mL)', unit: 'bottle', category: 'Analgesic', price: 78, stock: 36, reorderLevel: 12, brand: 'generic' },
+    { id: 'I-0019', name: 'Paracetamol', strength: '100 mg/mL', form: 'Drops (15 mL)', unit: 'bottle', category: 'Analgesic', price: 95, stock: 24, reorderLevel: 10, brand: 'generic' },
+    { id: 'I-0020', name: 'Paracetamol', strength: '300 mg/2 mL', form: 'Ampule', unit: 'amp', category: 'Analgesic', price: 42, stock: 30, reorderLevel: 12, brand: 'generic' },
+    { id: 'I-0021', name: 'Ibuprofen', strength: '200 mg', form: 'Tablet', unit: 'tab', category: 'NSAID', price: 4, stock: 220, reorderLevel: 80, brand: 'generic' },
+    { id: 'I-0022', name: 'Ibuprofen', strength: '100 mg/5 mL', form: 'Suspension (60 mL)', unit: 'bottle', category: 'NSAID', price: 92, stock: 20, reorderLevel: 8, brand: 'generic' },
+    { id: 'I-0023', name: 'Mefenamic acid', strength: '250 mg', form: 'Capsule', unit: 'cap', category: 'NSAID', price: 5.5, stock: 120, reorderLevel: 40, brand: 'generic' },
+    { id: 'I-0024', name: 'Naproxen', strength: '550 mg', form: 'Tablet', unit: 'tab', category: 'NSAID', price: 18, stock: 90, reorderLevel: 30, brand: 'generic' },
+    { id: 'I-0025', name: 'Diclofenac', strength: '50 mg', form: 'Tablet', unit: 'tab', category: 'NSAID', price: 9, stock: 140, reorderLevel: 50, brand: 'generic' },
+    { id: 'I-0026', name: 'Diclofenac', strength: '1 %', form: 'Gel (20 g)', unit: 'tube', category: 'NSAID', price: 185, stock: 18, reorderLevel: 6, brand: 'generic' },
+    { id: 'I-0027', name: 'Celecoxib', strength: '200 mg', form: 'Capsule', unit: 'cap', category: 'NSAID', price: 34, stock: 60, reorderLevel: 20, brand: 'generic' },
+    { id: 'I-0028', name: 'Ketorolac', strength: '30 mg/mL', form: 'Ampule', unit: 'amp', category: 'NSAID', price: 48, stock: 24, reorderLevel: 10, brand: 'generic' },
+    { id: 'I-0029', name: 'Tramadol', strength: '50 mg', form: 'Capsule', unit: 'cap', category: 'Analgesic', price: 22, stock: 40, reorderLevel: 15, brand: 'generic' },
+    { id: 'I-0030', name: 'Aspirin', strength: '80 mg', form: 'Tablet', unit: 'tab', category: 'Antiplatelet', price: 2.5, stock: 300, reorderLevel: 100, brand: 'generic' },
+    { id: 'I-0031', name: 'Amoxicillin', strength: '250 mg', form: 'Capsule', unit: 'cap', category: 'Antibiotic', price: 6, stock: 180, reorderLevel: 60, brand: 'generic' },
+    { id: 'I-0032', name: 'Amoxicillin', strength: '250 mg/5 mL', form: 'Suspension (60 mL)', unit: 'bottle', category: 'Antibiotic', price: 115, stock: 28, reorderLevel: 10, brand: 'generic' },
+    { id: 'I-0033', name: 'Amoxicillin', strength: '100 mg/mL', form: 'Drops (15 mL)', unit: 'bottle', category: 'Antibiotic', price: 135, stock: 16, reorderLevel: 6, brand: 'generic' },
+    { id: 'I-0034', name: 'Co-amoxiclav', strength: '1 g', form: 'Tablet', unit: 'tab', category: 'Antibiotic', price: 62, stock: 40, reorderLevel: 16, brand: 'generic' },
+    { id: 'I-0035', name: 'Co-amoxiclav', strength: '228 mg/5 mL', form: 'Suspension (60 mL)', unit: 'bottle', category: 'Antibiotic', price: 295, stock: 12, reorderLevel: 6, brand: 'generic' },
+    { id: 'I-0036', name: 'Cloxacillin', strength: '500 mg', form: 'Capsule', unit: 'cap', category: 'Antibiotic', price: 12, stock: 90, reorderLevel: 30, brand: 'generic' },
+    { id: 'I-0037', name: 'Cefalexin', strength: '250 mg/5 mL', form: 'Suspension (60 mL)', unit: 'bottle', category: 'Antibiotic', price: 155, stock: 18, reorderLevel: 8, brand: 'generic' },
+    { id: 'I-0038', name: 'Cefuroxime', strength: '500 mg', form: 'Tablet', unit: 'tab', category: 'Antibiotic', price: 58, stock: 48, reorderLevel: 20, brand: 'generic' },
+    { id: 'I-0039', name: 'Cefixime', strength: '200 mg', form: 'Capsule', unit: 'cap', category: 'Antibiotic', price: 46, stock: 40, reorderLevel: 16, brand: 'generic' },
+    { id: 'I-0040', name: 'Azithromycin', strength: '200 mg/5 mL', form: 'Suspension (15 mL)', unit: 'bottle', category: 'Antibiotic', price: 265, stock: 10, reorderLevel: 5, brand: 'generic' },
+    { id: 'I-0041', name: 'Clarithromycin', strength: '500 mg', form: 'Tablet', unit: 'tab', category: 'Antibiotic', price: 72, stock: 30, reorderLevel: 12, brand: 'generic' },
+    { id: 'I-0042', name: 'Erythromycin', strength: '500 mg', form: 'Tablet', unit: 'tab', category: 'Antibiotic', price: 16, stock: 60, reorderLevel: 20, brand: 'generic' },
+    { id: 'I-0043', name: 'Cotrimoxazole', strength: '200/40 mg per 5 mL', form: 'Suspension (60 mL)', unit: 'bottle', category: 'Antibiotic', price: 88, stock: 20, reorderLevel: 8, brand: 'generic' },
+    { id: 'I-0044', name: 'Ciprofloxacin', strength: '500 mg', form: 'Tablet', unit: 'tab', category: 'Antibiotic', price: 24, stock: 70, reorderLevel: 25, brand: 'generic' },
+    { id: 'I-0045', name: 'Levofloxacin', strength: '500 mg', form: 'Tablet', unit: 'tab', category: 'Antibiotic', price: 45, stock: 50, reorderLevel: 20, brand: 'generic' },
+    { id: 'I-0046', name: 'Metronidazole', strength: '500 mg', form: 'Tablet', unit: 'tab', category: 'Antibiotic', price: 8, stock: 120, reorderLevel: 40, brand: 'generic' },
+    { id: 'I-0047', name: 'Doxycycline', strength: '100 mg', form: 'Capsule', unit: 'cap', category: 'Antibiotic', price: 14, stock: 80, reorderLevel: 30, brand: 'generic' },
+    { id: 'I-0048', name: 'Nitrofurantoin', strength: '100 mg', form: 'Capsule', unit: 'cap', category: 'Antibiotic', price: 26, stock: 44, reorderLevel: 18, brand: 'generic' },
+    { id: 'I-0049', name: 'Cetirizine', strength: '5 mg/5 mL', form: 'Syrup (60 mL)', unit: 'bottle', category: 'Antihistamine', price: 98, stock: 26, reorderLevel: 10, brand: 'generic' },
+    { id: 'I-0050', name: 'Cetirizine', strength: '2.5 mg/mL', form: 'Drops (10 mL)', unit: 'bottle', category: 'Antihistamine', price: 125, stock: 14, reorderLevel: 6, brand: 'generic' },
+    { id: 'I-0051', name: 'Loratadine', strength: '5 mg/5 mL', form: 'Syrup (60 mL)', unit: 'bottle', category: 'Antihistamine', price: 105, stock: 18, reorderLevel: 8, brand: 'generic' },
+    { id: 'I-0052', name: 'Diphenhydramine', strength: '50 mg/mL', form: 'Ampule', unit: 'amp', category: 'Antihistamine', price: 38, stock: 20, reorderLevel: 8, brand: 'generic' },
+    { id: 'I-0053', name: 'Chlorphenamine', strength: '4 mg', form: 'Tablet', unit: 'tab', category: 'Antihistamine', price: 2, stock: 200, reorderLevel: 60, brand: 'generic' },
+    { id: 'I-0054', name: 'Montelukast', strength: '10 mg', form: 'Tablet', unit: 'tab', category: 'Antiasthmatic', price: 38, stock: 60, reorderLevel: 20, brand: 'generic' },
+    { id: 'I-0055', name: 'Montelukast', strength: '4 mg', form: 'Chewable tablet', unit: 'tab', category: 'Antiasthmatic', price: 32, stock: 40, reorderLevel: 16, brand: 'generic' },
+    { id: 'I-0056', name: 'Salbutamol', strength: '2 mg', form: 'Tablet', unit: 'tab', category: 'Bronchodilator', price: 3, stock: 150, reorderLevel: 50, brand: 'generic' },
+    { id: 'I-0057', name: 'Salbutamol + Ipratropium', strength: '2.5 mg/0.5 mg', form: 'Nebule', unit: 'neb', category: 'Bronchodilator', price: 38, stock: 30, reorderLevel: 12, brand: 'generic' },
+    { id: 'I-0058', name: 'Budesonide', strength: '0.5 mg/2 mL', form: 'Respule', unit: 'respule', category: 'Corticosteroid', price: 115, stock: 16, reorderLevel: 8, brand: 'generic' },
+    { id: 'I-0059', name: 'Carbocisteine', strength: '500 mg', form: 'Capsule', unit: 'cap', category: 'Mucolytic', price: 11, stock: 140, reorderLevel: 50, brand: 'generic' },
+    { id: 'I-0060', name: 'Carbocisteine', strength: '250 mg/5 mL', form: 'Syrup (60 mL)', unit: 'bottle', category: 'Mucolytic', price: 118, stock: 22, reorderLevel: 10, brand: 'generic' },
+    { id: 'I-0061', name: 'Ambroxol', strength: '30 mg', form: 'Tablet', unit: 'tab', category: 'Mucolytic', price: 9, stock: 120, reorderLevel: 40, brand: 'generic' },
+    { id: 'I-0062', name: 'Oxymetazoline', strength: '0.05 %', form: 'Nasal spray (15 mL)', unit: 'bottle', category: 'Decongestant', price: 165, stock: 14, reorderLevel: 6, brand: 'generic' },
+    { id: 'I-0063', name: 'Prednisone', strength: '20 mg', form: 'Tablet', unit: 'tab', category: 'Corticosteroid', price: 7, stock: 100, reorderLevel: 40, brand: 'generic' },
+    { id: 'I-0064', name: 'Dexamethasone', strength: '4 mg/mL', form: 'Ampule', unit: 'amp', category: 'Corticosteroid', price: 35, stock: 24, reorderLevel: 10, brand: 'generic' },
+    { id: 'I-0065', name: 'Omeprazole', strength: '40 mg', form: 'Capsule', unit: 'cap', category: 'PPI', price: 19, stock: 90, reorderLevel: 30, brand: 'generic' },
+    { id: 'I-0066', name: 'Pantoprazole', strength: '40 mg', form: 'Tablet', unit: 'tab', category: 'PPI', price: 28, stock: 70, reorderLevel: 25, brand: 'generic' },
+    { id: 'I-0067', name: 'Famotidine', strength: '40 mg', form: 'Tablet', unit: 'tab', category: 'H2 blocker', price: 13, stock: 80, reorderLevel: 30, brand: 'generic' },
+    { id: 'I-0068', name: 'Aluminium + Magnesium hydroxide', strength: '225/200 mg per 5 mL', form: 'Suspension (120 mL)', unit: 'bottle', category: 'Antacid', price: 112, stock: 20, reorderLevel: 8, brand: 'generic' },
+    { id: 'I-0069', name: 'Domperidone', strength: '10 mg', form: 'Tablet', unit: 'tab', category: 'Antiemetic', price: 12, stock: 90, reorderLevel: 30, brand: 'generic' },
+    { id: 'I-0070', name: 'Metoclopramide', strength: '10 mg/2 mL', form: 'Ampule', unit: 'amp', category: 'Antiemetic', price: 26, stock: 24, reorderLevel: 10, brand: 'generic' },
+    { id: 'I-0071', name: 'Hyoscine-N-butylbromide', strength: '10 mg', form: 'Tablet', unit: 'tab', category: 'Antispasmodic', price: 17, stock: 80, reorderLevel: 30, brand: 'generic' },
+    { id: 'I-0072', name: 'Loperamide', strength: '2 mg', form: 'Capsule', unit: 'cap', category: 'Antidiarrhoeal', price: 7, stock: 100, reorderLevel: 35, brand: 'generic' },
+    { id: 'I-0073', name: 'Lactulose', strength: '10 g/15 mL', form: 'Syrup (120 mL)', unit: 'bottle', category: 'Laxative', price: 198, stock: 12, reorderLevel: 6, brand: 'generic' },
+    { id: 'I-0074', name: 'Bisacodyl', strength: '5 mg', form: 'Tablet', unit: 'tab', category: 'Laxative', price: 6, stock: 90, reorderLevel: 30, brand: 'generic' },
+    { id: 'I-0075', name: 'Amlodipine', strength: '10 mg', form: 'Tablet', unit: 'tab', category: 'Antihypertensive', price: 9, stock: 180, reorderLevel: 60, brand: 'generic' },
+    { id: 'I-0076', name: 'Losartan', strength: '100 mg', form: 'Tablet', unit: 'tab', category: 'Antihypertensive', price: 15, stock: 160, reorderLevel: 60, brand: 'generic' },
+    { id: 'I-0077', name: 'Telmisartan', strength: '40 mg', form: 'Tablet', unit: 'tab', category: 'Antihypertensive', price: 26, stock: 90, reorderLevel: 30, brand: 'generic' },
+    { id: 'I-0078', name: 'Metoprolol', strength: '50 mg', form: 'Tablet', unit: 'tab', category: 'Antihypertensive', price: 12, stock: 100, reorderLevel: 35, brand: 'generic' },
+    { id: 'I-0079', name: 'Hydrochlorothiazide', strength: '25 mg', form: 'Tablet', unit: 'tab', category: 'Diuretic', price: 5, stock: 120, reorderLevel: 40, brand: 'generic' },
+    { id: 'I-0080', name: 'Furosemide', strength: '40 mg', form: 'Tablet', unit: 'tab', category: 'Diuretic', price: 6, stock: 110, reorderLevel: 40, brand: 'generic' },
+    { id: 'I-0081', name: 'Atorvastatin', strength: '20 mg', form: 'Tablet', unit: 'tab', category: 'Statin', price: 21, stock: 120, reorderLevel: 40, brand: 'generic' },
+    { id: 'I-0082', name: 'Rosuvastatin', strength: '10 mg', form: 'Tablet', unit: 'tab', category: 'Statin', price: 33, stock: 70, reorderLevel: 25, brand: 'generic' },
+    { id: 'I-0083', name: 'Metformin', strength: '850 mg', form: 'Tablet', unit: 'tab', category: 'Antidiabetic', price: 6, stock: 160, reorderLevel: 60, brand: 'generic' },
+    { id: 'I-0084', name: 'Gliclazide', strength: '60 mg', form: 'MR tablet', unit: 'tab', category: 'Antidiabetic', price: 24, stock: 60, reorderLevel: 20, brand: 'generic' },
+    { id: 'I-0085', name: 'Glimepiride', strength: '2 mg', form: 'Tablet', unit: 'tab', category: 'Antidiabetic', price: 15, stock: 70, reorderLevel: 25, brand: 'generic' },
+    { id: 'I-0086', name: 'Clopidogrel', strength: '75 mg', form: 'Tablet', unit: 'tab', category: 'Antiplatelet', price: 29, stock: 60, reorderLevel: 20, brand: 'generic' },
+    { id: 'I-0087', name: 'Isosorbide dinitrate', strength: '5 mg', form: 'Sublingual tablet', unit: 'tab', category: 'Antianginal', price: 8, stock: 80, reorderLevel: 30, brand: 'generic' },
+    { id: 'I-0088', name: 'Allopurinol', strength: '300 mg', form: 'Tablet', unit: 'tab', category: 'Antigout', price: 11, stock: 90, reorderLevel: 30, brand: 'generic' },
+    { id: 'I-0089', name: 'Colchicine', strength: '500 mcg', form: 'Tablet', unit: 'tab', category: 'Antigout', price: 27, stock: 50, reorderLevel: 20, brand: 'generic' },
+    { id: 'I-0090', name: 'Ascorbic acid', strength: '500 mg', form: 'Tablet', unit: 'tab', category: 'Vitamin', price: 3, stock: 400, reorderLevel: 120, brand: 'generic' },
+    { id: 'I-0091', name: 'Ascorbic acid + Zinc', strength: '100 mg/mL', form: 'Drops (15 mL)', unit: 'bottle', category: 'Vitamin', price: 145, stock: 20, reorderLevel: 8, brand: 'generic' },
+    { id: 'I-0092', name: 'Ferrous sulfate', strength: '325 mg', form: 'Tablet', unit: 'tab', category: 'Haematinic', price: 4, stock: 200, reorderLevel: 70, brand: 'generic' },
+    { id: 'I-0093', name: 'Ferrous sulfate', strength: '15 mg/0.6 mL', form: 'Drops (15 mL)', unit: 'bottle', category: 'Haematinic', price: 128, stock: 16, reorderLevel: 8, brand: 'generic' },
+    { id: 'I-0094', name: 'Folic acid', strength: '5 mg', form: 'Tablet', unit: 'tab', category: 'Vitamin', price: 2.5, stock: 240, reorderLevel: 80, brand: 'generic' },
+    { id: 'I-0095', name: 'Vitamin B complex', strength: 'B1 100 mg / B6 5 mg / B12 50 mcg', form: 'Tablet', unit: 'tab', category: 'Vitamin', price: 9, stock: 180, reorderLevel: 60, brand: 'generic' },
+    { id: 'I-0096', name: 'Calcium carbonate + Vitamin D3', strength: '500 mg / 400 IU', form: 'Tablet', unit: 'tab', category: 'Supplement', price: 12, stock: 140, reorderLevel: 50, brand: 'generic' },
+    { id: 'I-0097', name: 'Zinc sulfate', strength: '55 mg/5 mL', form: 'Syrup (60 mL)', unit: 'bottle', category: 'Supplement', price: 110, stock: 20, reorderLevel: 8, brand: 'generic' },
+    { id: 'I-0098', name: 'Mupirocin', strength: '2 %', form: 'Ointment (5 g)', unit: 'tube', category: 'Topical antibiotic', price: 210, stock: 14, reorderLevel: 6, brand: 'generic' },
+    { id: 'I-0099', name: 'Betamethasone valerate', strength: '0.1 %', form: 'Cream (5 g)', unit: 'tube', category: 'Topical steroid', price: 96, stock: 20, reorderLevel: 8, brand: 'generic' },
+    { id: 'I-0100', name: 'Hydrocortisone', strength: '1 %', form: 'Cream (5 g)', unit: 'tube', category: 'Topical steroid', price: 78, stock: 22, reorderLevel: 8, brand: 'generic' },
+    { id: 'I-0101', name: 'Clotrimazole', strength: '1 %', form: 'Cream (10 g)', unit: 'tube', category: 'Antifungal', price: 88, stock: 24, reorderLevel: 10, brand: 'generic' },
+    { id: 'I-0102', name: 'Ketoconazole', strength: '2 %', form: 'Cream (15 g)', unit: 'tube', category: 'Antifungal', price: 132, stock: 18, reorderLevel: 8, brand: 'generic' },
+    { id: 'I-0103', name: 'Silver sulfadiazine', strength: '1 %', form: 'Cream (25 g)', unit: 'tube', category: 'Burn care', price: 245, stock: 10, reorderLevel: 4, brand: 'generic' },
+    { id: 'I-0104', name: 'Povidone-iodine', strength: '10 %', form: 'Solution (60 mL)', unit: 'bottle', category: 'Antiseptic', price: 85, stock: 26, reorderLevel: 10, brand: 'generic' },
+    { id: 'I-0105', name: 'Tobramycin', strength: '0.3 %', form: 'Eye drops (5 mL)', unit: 'bottle', category: 'Ophthalmic', price: 175, stock: 12, reorderLevel: 6, brand: 'generic' },
+    { id: 'I-0106', name: 'Ofloxacin', strength: '0.3 %', form: 'Otic drops (5 mL)', unit: 'bottle', category: 'Otic', price: 168, stock: 12, reorderLevel: 6, brand: 'generic' },
+    { id: 'I-0107', name: 'Lidocaine', strength: '2 %', form: 'Ampule (5 mL)', unit: 'amp', category: 'Anaesthetic', price: 32, stock: 30, reorderLevel: 12, brand: 'generic' },
+    { id: 'I-0108', name: 'Tetanus toxoid', strength: '0.5 mL', form: 'Vial', unit: 'vial', category: 'Vaccine', price: 320, stock: 8, reorderLevel: 4, brand: 'generic' },
   ];
 
   /* Medication rows carry itemId so billing can deduct stock on payment. */
@@ -914,6 +1213,149 @@ function buildSeed() {
     },
   ];
 
+  /* Front-desk team. Staff sign in as one of these from the header. */
+  const staff = [
+    { id: 'S-0001', name: 'Imelda Cruz', role: 'Receptionist', desk: 'Front desk' },
+    { id: 'S-0002', name: 'Benjie Ramos', role: 'Pharmacy assistant', desk: 'Pharmacy' },
+    { id: 'S-0003', name: 'Cherry Lim', role: 'Billing clerk', desk: 'Billing' },
+  ];
+
+  const msg = (from, body, minsAgo, read = true) => ({
+    id: `MSG-${from.id}-${minsAgo}`,
+    from,
+    body,
+    at: ago(minsAgo),
+    read,
+  });
+
+  /* Seeded conversations. Note every thread is doctor↔patient or doctor↔staff —
+     patient↔staff is not a permitted pairing (see MESSAGING_RULES). */
+  const threads = [
+    {
+      id: 'T-0001',
+      participants: [{ kind: 'doctor', id: 'D-0001' }, { kind: 'patient', id: 'P-0001' }],
+      subject: 'Home BP readings',
+      createdAt: ago(60 * 30),
+      updatedAt: ago(60 * 3),
+      messages: [
+        msg({ kind: 'patient', id: 'P-0001' }, 'Good morning Doc. My BP this week has been 128–136 over 80–86. Should I still come in on my scheduled follow-up?', 60 * 30),
+        msg({ kind: 'doctor', id: 'D-0001' }, 'Good morning! Those readings are much better. Yes, please still come in so we can repeat your creatinine and lipid profile. Keep taking the Amlodipine in the morning.', 60 * 28),
+        msg({ kind: 'patient', id: 'P-0001' }, 'Noted, Doc. Thank you po.', 60 * 3, false),
+      ],
+    },
+    {
+      id: 'T-0002',
+      participants: [{ kind: 'doctor', id: 'D-0001' }, { kind: 'staff', id: 'S-0002' }],
+      subject: 'Salbutamol MDI stock',
+      createdAt: ago(60 * 8),
+      updatedAt: ago(45),
+      messages: [
+        msg({ kind: 'doctor', id: 'D-0001' }, 'Benjie, are we really out of Salbutamol MDI? I have an asthmatic coming in this afternoon.', 60 * 8),
+        msg({ kind: 'staff', id: 'S-0002' }, 'Yes Doc, zero on hand. Delivery is due Thursday. We still have 44 nebules if you want to nebulize here instead.', 45, false),
+      ],
+    },
+    {
+      id: 'T-0003',
+      participants: [{ kind: 'doctor', id: 'D-0002' }, { kind: 'patient', id: 'P-0003' }],
+      subject: 'Omeprazole and my maintenance',
+      createdAt: ago(60 * 5),
+      updatedAt: ago(60 * 5),
+      messages: [
+        msg({ kind: 'patient', id: 'P-0003' }, 'Doc, can I take the Omeprazole together with my Metformin in the morning?', 60 * 5, false),
+      ],
+    },
+    {
+      id: 'T-0004',
+      participants: [{ kind: 'doctor', id: 'D-0003' }, { kind: 'staff', id: 'S-0001' }],
+      subject: 'Afternoon pediatric slots',
+      createdAt: ago(60 * 20),
+      updatedAt: ago(60 * 19),
+      messages: [
+        msg({ kind: 'staff', id: 'S-0001' }, 'Doc Grace, two parents are asking for 4:30 PM slots on Thursday. Can I open them?', 60 * 20),
+        msg({ kind: 'doctor', id: 'D-0003' }, 'Yes, go ahead. Just keep the last slot free for walk-in febrile kids.', 60 * 19),
+      ],
+    },
+  ];
+
+  /* Follow-up reminders raised from encounters, plus a couple of other kinds.
+     `status` is Scheduled until the desk sends it (simulated SMS). */
+  const notifications = [
+    {
+      id: 'N-0001',
+      to: { kind: 'patient', id: 'P-0003' },
+      kind: 'follow-up',
+      title: 'Gastritis follow-up',
+      body: 'Follow-up with Dr. Aguilar in 2 weeks, and repeat your FBS before the visit.',
+      dueDate: inDays(14),
+      encounterId: 'E-0014',
+      createdAt: ago(50),
+      read: false,
+      status: 'Scheduled',
+    },
+    {
+      id: 'N-0002',
+      to: { kind: 'patient', id: 'P-0001' },
+      kind: 'follow-up',
+      title: 'Hypertension follow-up',
+      body: 'Repeat creatinine and lipid profile before your next visit with Dr. Santos.',
+      dueDate: inDays(5),
+      encounterId: 'E-0011',
+      createdAt: ago(60 * 24 * 4),
+      read: false,
+      status: 'Sent',
+      sentAt: ago(60 * 24 * 2),
+    },
+    {
+      id: 'N-0003',
+      to: { kind: 'patient', id: 'P-0006' },
+      kind: 'follow-up',
+      title: 'Repeat lipid profile',
+      body: 'Three-month lifestyle review with Dr. Aguilar — repeat your lipid profile first.',
+      dueDate: inDays(63),
+      encounterId: 'E-0008',
+      createdAt: ago(60 * 24 * 27),
+      read: true,
+      status: 'Scheduled',
+    },
+    {
+      id: 'N-0005',
+      to: { kind: 'patient', id: 'P-0005' },
+      kind: 'follow-up',
+      title: 'Dermatitis recheck',
+      body: 'Dr. Santos wants to see how the rashes responded after stopping the new detergent.',
+      dueDate: inDays(2),
+      encounterId: 'E-0012',
+      createdAt: ago(60 * 24 * 6),
+      read: false,
+      status: 'Scheduled',
+    },
+    {
+      id: 'N-0006',
+      to: { kind: 'patient', id: 'P-0008' },
+      kind: 'follow-up',
+      title: 'BP and knee pain follow-up',
+      body: 'One-month review with Dr. Aguilar — bring your BP diary.',
+      dueDate: inDays(-3),
+      encounterId: 'E-0005',
+      createdAt: ago(60 * 24 * 33),
+      read: false,
+      status: 'Scheduled',
+    },
+    {
+      id: 'N-0004',
+      to: { kind: 'patient', id: 'P-0002' },
+      kind: 'appointment',
+      title: 'Teleconsultation in 2 days',
+      body: 'Review of your urinalysis results with Dr. Santos. Your room opens 10 minutes before the schedule.',
+      dueDate: inDays(2),
+      appointmentId: 'A-0004',
+      createdAt: ago(60 * 24),
+      read: false,
+      status: 'Sent',
+      sentAt: ago(60 * 24),
+    },
+  ];
+
   return {
     schemaVersion: SCHEMA_VERSION,
     seededAt: new Date().toISOString(),
@@ -924,6 +1366,9 @@ function buildSeed() {
     invoices,
     queue,
     appointments,
+    staff,
+    threads,
+    notifications,
   };
 }
 
@@ -973,6 +1418,11 @@ function reducer(state, action) {
         ...state,
         encounters: [...state.encounters, action.encounter],
         invoices: [...state.invoices, action.invoice],
+        /* A follow-up date on the note raises the patient's reminder right here,
+           so nothing depends on the doctor remembering a second step. */
+        notifications: action.followUpNotification
+          ? [...state.notifications, action.followUpNotification]
+          : state.notifications,
         queue: state.queue.map((q) =>
           q.id === action.queueId
             ? {
@@ -1024,6 +1474,87 @@ function reducer(state, action) {
         }),
       };
     }
+
+    /* --- messaging ---------------------------------------------------------
+       The pairing rule is re-checked here, not just in the UI: a patient and a
+       staff member can never end up sharing a thread, whatever dispatches it. */
+    case 'SEND_MESSAGE': {
+      const { threadId, message, participants, subject } = action;
+      const existing = threadId ? state.threads.find((t) => t.id === threadId) : null;
+      const parties = existing ? existing.participants : participants;
+      const [a, b] = parties ?? [];
+      if (!a || !b || !canMessage(a.kind, b.kind) || !canMessage(b.kind, a.kind)) return state;
+
+      if (existing) {
+        return {
+          ...state,
+          threads: state.threads.map((t) =>
+            t.id === threadId
+              ? { ...t, messages: [...t.messages, message], updatedAt: message.at }
+              : t,
+          ),
+        };
+      }
+      return {
+        ...state,
+        threads: [
+          ...state.threads,
+          {
+            id: action.newThreadId,
+            participants,
+            subject: subject || '(no subject)',
+            createdAt: message.at,
+            updatedAt: message.at,
+            messages: [message],
+          },
+        ],
+      };
+    }
+
+    /* Mark everything in a thread that the viewer did not write as read. */
+    case 'MARK_THREAD_READ':
+      return {
+        ...state,
+        threads: state.threads.map((t) =>
+          t.id === action.threadId
+            ? {
+                ...t,
+                messages: t.messages.map((m) =>
+                  samePartyAs(m.from, action.viewer) ? m : { ...m, read: true },
+                ),
+              }
+            : t,
+        ),
+      };
+
+    /* --- notifications ------------------------------------------------------ */
+    case 'ADD_NOTIFICATION':
+      return { ...state, notifications: [...state.notifications, action.notification] };
+
+    case 'MARK_NOTIFICATION_READ':
+      return {
+        ...state,
+        notifications: state.notifications.map((n) =>
+          n.id === action.id ? { ...n, read: true } : n,
+        ),
+      };
+
+    case 'MARK_ALL_NOTIFICATIONS_READ':
+      return {
+        ...state,
+        notifications: state.notifications.map((n) =>
+          samePartyAs(n.to, action.viewer) ? { ...n, read: true } : n,
+        ),
+      };
+
+    /* The desk "sends" the reminder — simulated SMS, see CLAUDE.md gap 9. */
+    case 'SEND_REMINDER':
+      return {
+        ...state,
+        notifications: state.notifications.map((n) =>
+          n.id === action.id ? { ...n, status: 'Sent', sentAt: action.at } : n,
+        ),
+      };
 
     case 'ADD_APPOINTMENT':
       return { ...state, appointments: [...state.appointments, action.appointment] };
@@ -1411,7 +1942,7 @@ function Toasts({ items, onDismiss }) {
 }
 
 function Header({ role, setRole }) {
-  const { state, patientId, setPatientId, doctorId, setDoctorId } = useClinic();
+  const { state, patientId, setPatientId, doctorId, setDoctorId, staffId, setStaffId } = useClinic();
   const theme = ROLE_THEME[role];
 
   return (
@@ -1479,8 +2010,23 @@ function Header({ role, setRole }) {
             ))}
           </select>
         )}
+        {role === 'staff' && (
+          <select
+            className="input hidden !w-auto !py-1.5 text-xs md:block"
+            value={staffId}
+            onChange={(e) => setStaffId(e.target.value)}
+            aria-label="Signed in as staff"
+          >
+            {state.staff.map((s) => (
+              <option key={s.id} value={s.id}>
+                {s.name} · {s.role}
+              </option>
+            ))}
+          </select>
+        )}
 
         <LiveClock />
+        <NotificationBell />
         <PwaStatus />
       </div>
     </header>
@@ -1855,6 +2401,595 @@ function HourlyBars({ data, accent = 'teal' }) {
         ))}
       </div>
     </div>
+  );
+}
+
+
+/* ===== 5b. Messaging & notifications ============================================ */
+
+/* Display name for a participant, whichever directory they live in. */
+function partyName(state, party) {
+  if (!party) return 'Unknown';
+  if (party.kind === 'doctor') return doctorName(findBy(state.doctors, party.id));
+  if (party.kind === 'patient') return patientName(findBy(state.patients, party.id));
+  const s = findBy(state.staff, party.id);
+  return s ? s.name : 'Front desk';
+}
+
+function partySubtitle(state, party) {
+  if (!party) return '';
+  if (party.kind === 'doctor') return findBy(state.doctors, party.id)?.specialty ?? '';
+  if (party.kind === 'patient') {
+    const p = findBy(state.patients, party.id);
+    return p ? `${p.id} · ${ageLabel(p.dob)} · ${p.sex}` : '';
+  }
+  return findBy(state.staff, party.id)?.role ?? '';
+}
+
+const PARTY_TONE = {
+  doctor: 'bg-teal-100 text-teal-700',
+  patient: 'bg-indigo-100 text-indigo-700',
+  staff: 'bg-sky-100 text-sky-700',
+};
+
+const threadsFor = (state, me) =>
+  (state.threads ?? [])
+    .filter((t) => t.participants.some((p) => samePartyAs(p, me)))
+    .slice()
+    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+
+const otherParty = (thread, me) => thread.participants.find((p) => !samePartyAs(p, me));
+
+const unreadInThread = (thread, me) =>
+  thread.messages.filter((m) => !m.read && !samePartyAs(m.from, me)).length;
+
+const unreadThreadCount = (state, me) =>
+  threadsFor(state, me).reduce((n, t) => n + (unreadInThread(t, me) > 0 ? 1 : 0), 0);
+
+const notificationsFor = (state, me) =>
+  (state.notifications ?? [])
+    .filter((n) => samePartyAs(n.to, me))
+    .slice()
+    .sort((a, b) => (b.createdAt ?? '').localeCompare(a.createdAt ?? ''));
+
+/* Follow-ups the desk should be chasing: due within the lead window, or overdue. */
+const dueReminders = (state) =>
+  (state.notifications ?? [])
+    .filter((n) => n.kind === 'follow-up' && n.status !== 'Sent' && daysUntil(n.dueDate) <= REMINDER_LEAD_DAYS)
+    .sort((a, b) => a.dueDate.localeCompare(b.dueDate));
+
+function NotificationBell() {
+  const { state, me, act } = useClinic();
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+
+  const items = useMemo(() => notificationsFor(state, me), [state, me]);
+  const unread = items.filter((n) => !n.read).length;
+
+  useEffect(() => {
+    if (!open) return undefined;
+    const onDown = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
+    const onKey = (e) => e.key === 'Escape' && setOpen(false);
+    document.addEventListener('mousedown', onDown);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onDown);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [open]);
+
+  return (
+    <div className="relative" ref={ref}>
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="relative rounded-lg p-1.5 text-slate-500 transition hover:bg-slate-100 hover:text-slate-800"
+        aria-label={`Notifications${unread ? ` (${unread} unread)` : ''}`}
+        aria-expanded={open}
+      >
+        {unread > 0 ? <BellRing className="h-5 w-5" /> : <Bell className="h-5 w-5" />}
+        {unread > 0 && (
+          <span className="nums absolute -right-0.5 -top-0.5 grid h-4 min-w-[1rem] place-items-center rounded-full bg-rose-600 px-1 text-[10px] font-bold text-white">
+            {unread}
+          </span>
+        )}
+      </button>
+
+      {open && (
+        <div
+          role="dialog"
+          aria-label="Notifications"
+          className="absolute right-0 z-40 mt-2 w-80 animate-pop-in overflow-hidden rounded-xl border border-slate-200 bg-white shadow-xl"
+        >
+          <div className="flex items-center justify-between border-b border-slate-100 px-3 py-2">
+            <span className="text-xs font-bold uppercase tracking-wide text-slate-500">Notifications</span>
+            {unread > 0 && (
+              <button
+                type="button"
+                className="text-[11px] font-semibold text-teal-700 hover:underline"
+                onClick={() => act({ type: 'MARK_ALL_NOTIFICATIONS_READ', viewer: me }, { silent: true })}
+              >
+                Mark all read
+              </button>
+            )}
+          </div>
+
+          <div className="thin-scroll max-h-80 overflow-y-auto">
+            {items.length === 0 && (
+              <p className="px-3 py-6 text-center text-xs text-slate-400">Nothing yet.</p>
+            )}
+            {items.map((n) => {
+              const meta = NOTIFICATION_KINDS[n.kind] ?? NOTIFICATION_KINDS.message;
+              const Icon = meta.icon;
+              const days = n.dueDate ? daysUntil(n.dueDate) : null;
+              return (
+                <button
+                  key={n.id}
+                  type="button"
+                  onClick={() => act({ type: 'MARK_NOTIFICATION_READ', id: n.id }, { silent: true })}
+                  className={cx(
+                    'flex w-full gap-2.5 border-b border-slate-50 px-3 py-2.5 text-left transition hover:bg-slate-50',
+                    !n.read && 'bg-teal-50/40',
+                  )}
+                >
+                  <span className={cx('mt-0.5 grid h-7 w-7 shrink-0 place-items-center rounded-lg', meta.tone)}>
+                    <Icon className="h-3.5 w-3.5" />
+                  </span>
+                  <span className="min-w-0 flex-1">
+                    <span className="flex items-center gap-1.5">
+                      <span className="truncate text-xs font-bold text-slate-900">{n.title}</span>
+                      {!n.read && <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-teal-600" />}
+                    </span>
+                    <span className="mt-0.5 block text-[11px] leading-snug text-slate-600">{n.body}</span>
+                    {n.dueDate && (
+                      <span
+                        className={cx(
+                          'mt-1 block text-[10px] font-semibold',
+                          days < 0 ? 'text-rose-600' : days <= 3 ? 'text-amber-600' : 'text-slate-400',
+                        )}
+                      >
+                        {days < 0
+                          ? `${Math.abs(days)} day${Math.abs(days) === 1 ? '' : 's'} overdue`
+                          : days === 0
+                            ? 'Due today'
+                            : `Due in ${days} day${days === 1 ? '' : 's'} · ${fmtDate(n.dueDate)}`}
+                      </span>
+                    )}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* Two-pane inbox shared by all three portals. The recipient list is built from
+   MESSAGING_RULES, so the patient↔staff pairing simply has nobody to pick. */
+function MessagesPanel({ accent = 'teal' }) {
+  const { state, me, act, toast } = useClinic();
+  const threads = useMemo(() => threadsFor(state, me), [state, me]);
+
+  const [activeId, setActiveId] = useState(null);
+  const [body, setBody] = useState('');
+  const [composing, setComposing] = useState(false);
+  const [toKey, setToKey] = useState('');
+  const [subject, setSubject] = useState('');
+  const endRef = useRef(null);
+
+  const active = threads.find((t) => t.id === activeId) ?? null;
+
+  /* Opening a thread clears its unread marks — an autoread, so keep it silent. */
+  useEffect(() => {
+    if (!active) return;
+    if (unreadInThread(active, me) > 0) {
+      act({ type: 'MARK_THREAD_READ', threadId: active.id, viewer: me }, { silent: true });
+    }
+  }, [active, me, act]);
+
+  useEffect(() => {
+    endRef.current?.scrollIntoView({ block: 'end' });
+  }, [active?.messages.length, activeId]);
+
+  /* Everyone this role is allowed to start a thread with. */
+  const recipients = useMemo(() => {
+    const kinds = MESSAGING_RULES[me.kind] ?? [];
+    const out = [];
+    if (kinds.includes('doctor')) {
+      for (const d of state.doctors) out.push({ kind: 'doctor', id: d.id, label: `Dr. ${d.name}`, sub: d.specialty });
+    }
+    if (kinds.includes('patient')) {
+      for (const p of state.patients) out.push({ kind: 'patient', id: p.id, label: patientName(p), sub: `${p.id} · ${ageLabel(p.dob)}` });
+    }
+    if (kinds.includes('staff')) {
+      for (const s of state.staff) out.push({ kind: 'staff', id: s.id, label: s.name, sub: s.role });
+    }
+    return out.filter((r) => !samePartyAs(r, me));
+  }, [state.doctors, state.patients, state.staff, me]);
+
+  const send = () => {
+    const text = body.trim();
+    if (!text || !active) return;
+    act({
+      type: 'SEND_MESSAGE',
+      threadId: active.id,
+      message: { id: `MSG-${Date.now()}`, from: me, body: text, at: new Date().toISOString(), read: false },
+    });
+    setBody('');
+  };
+
+  const startThread = () => {
+    const [kind, id] = toKey.split(':');
+    if (!kind || !id) {
+      toast('Pick who you want to message.', 'warn');
+      return;
+    }
+    if (!body.trim()) {
+      toast('Write a message first.', 'warn');
+      return;
+    }
+    if (!canMessage(me.kind, kind)) {
+      toast('That conversation is not allowed.', 'error');
+      return;
+    }
+    const to = { kind, id };
+    const existing = threads.find((t) => samePartyAs(otherParty(t, me), to));
+    const message = { id: `MSG-${Date.now()}`, from: me, body: body.trim(), at: new Date().toISOString(), read: false };
+
+    if (existing) {
+      act({ type: 'SEND_MESSAGE', threadId: existing.id, message });
+      setActiveId(existing.id);
+    } else {
+      const newThreadId = nextId('T', state.threads);
+      act({
+        type: 'SEND_MESSAGE',
+        newThreadId,
+        participants: [me, to],
+        subject: subject.trim() || 'New conversation',
+        message,
+      });
+      setActiveId(newThreadId);
+    }
+    setBody('');
+    setSubject('');
+    setToKey('');
+    setComposing(false);
+    toast(`Message sent to ${partyName(state, to)}`, 'success');
+  };
+
+  const btn = { teal: 'btn-primary', indigo: 'btn-indigo', sky: 'btn-sky' }[accent];
+
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <h1 className="text-xl font-bold text-slate-900">Messages</h1>
+          <p className="text-sm text-slate-500">
+            {me.kind === 'doctor' && 'Your patients and the clinic team.'}
+            {me.kind === 'patient' && 'Your doctors. For billing or scheduling, call the front desk.'}
+            {me.kind === 'staff' && 'The doctors. Patient questions go through their attending doctor.'}
+          </p>
+        </div>
+        <button type="button" className={cx(btn, 'btn-sm')} onClick={() => { setComposing(true); setActiveId(null); }}>
+          <Plus className="h-3.5 w-3.5" /> New message
+        </button>
+      </div>
+
+      <div className="grid gap-4 lg:grid-cols-[320px,1fr]">
+        {/* Thread list */}
+        <section className="card overflow-hidden">
+          <div className="card-head">
+            <h2 className="card-title">Inbox</h2>
+            <Badge tone="bg-slate-100 text-slate-500">{threads.length}</Badge>
+          </div>
+          <ul className="thin-scroll max-h-[28rem] divide-y divide-slate-100 overflow-y-auto">
+            {threads.length === 0 && (
+              <li><EmptyState icon={MessageSquare} title="No conversations yet" hint="Start one with the button above." /></li>
+            )}
+            {threads.map((t) => {
+              const who = otherParty(t, me);
+              const unread = unreadInThread(t, me);
+              const last = t.messages[t.messages.length - 1];
+              return (
+                <li key={t.id}>
+                  <button
+                    type="button"
+                    onClick={() => { setActiveId(t.id); setComposing(false); }}
+                    className={cx(
+                      'flex w-full items-start gap-2.5 px-3 py-2.5 text-left transition hover:bg-slate-50',
+                      activeId === t.id && 'bg-slate-50',
+                    )}
+                  >
+                    <Avatar name={partyName(state, who)} tone={PARTY_TONE[who?.kind]} size="h-8 w-8 text-[10px]" />
+                    <span className="min-w-0 flex-1">
+                      <span className="flex items-center justify-between gap-2">
+                        <span className="truncate text-sm font-semibold text-slate-900">{partyName(state, who)}</span>
+                        <span className="shrink-0 text-[10px] text-slate-400">{fmtTime(t.updatedAt)}</span>
+                      </span>
+                      <span className="block truncate text-xs text-slate-500">{t.subject}</span>
+                      <span className="mt-0.5 block truncate text-[11px] text-slate-400">
+                        {samePartyAs(last.from, me) ? 'You: ' : ''}{last.body}
+                      </span>
+                    </span>
+                    {unread > 0 && (
+                      <span className="nums mt-1 grid h-4 min-w-[1rem] shrink-0 place-items-center rounded-full bg-rose-600 px-1 text-[10px] font-bold text-white">
+                        {unread}
+                      </span>
+                    )}
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+        </section>
+
+        {/* Conversation / composer */}
+        <section className="card flex min-h-[28rem] flex-col overflow-hidden">
+          {composing ? (
+            <>
+              <div className="card-head"><h2 className="card-title">New message</h2></div>
+              <div className="space-y-3 p-4">
+                <Field label="To" required>
+                  <select className="input" value={toKey} onChange={(e) => setToKey(e.target.value)}>
+                    <option value="">Select a recipient…</option>
+                    {['doctor', 'patient', 'staff']
+                      .filter((k) => recipients.some((r) => r.kind === k))
+                      .map((kind) => (
+                        <optgroup key={kind} label={kind === 'doctor' ? 'Doctors' : kind === 'patient' ? 'Patients' : 'Clinic team'}>
+                          {recipients.filter((r) => r.kind === kind).map((r) => (
+                            <option key={partyKey(r)} value={partyKey(r)}>{r.label} — {r.sub}</option>
+                          ))}
+                        </optgroup>
+                      ))}
+                  </select>
+                </Field>
+                <Field label="Subject">
+                  <input className="input" value={subject} onChange={(e) => setSubject(e.target.value)} placeholder="e.g. Question about my maintenance" />
+                </Field>
+                <Field label="Message" required>
+                  <textarea className="input min-h-[120px] resize-y" value={body} onChange={(e) => setBody(e.target.value)} placeholder="Type your message…" />
+                </Field>
+                <div className="flex justify-end gap-2">
+                  <button type="button" className="btn-ghost btn-sm" onClick={() => setComposing(false)}>Cancel</button>
+                  <button type="button" className={cx(btn, 'btn-sm')} onClick={startThread}>
+                    <Send className="h-3.5 w-3.5" /> Send
+                  </button>
+                </div>
+                <p className="rounded-lg bg-slate-50 px-3 py-2 text-[11px] leading-snug text-slate-500">
+                  {me.kind === 'patient'
+                    ? 'You can only message doctors. Billing, scheduling and records requests are handled by the front desk over the phone or in person.'
+                    : me.kind === 'staff'
+                      ? 'The front desk can only message doctors. Anything a patient needs to hear goes through their attending doctor.'
+                      : 'You can message your patients and the clinic team.'}
+                </p>
+              </div>
+            </>
+          ) : active ? (
+            <>
+              <div className="card-head">
+                <div className="flex min-w-0 items-center gap-2.5">
+                  <Avatar name={partyName(state, otherParty(active, me))} tone={PARTY_TONE[otherParty(active, me)?.kind]} size="h-8 w-8 text-[10px]" />
+                  <div className="min-w-0">
+                    <h2 className="truncate text-sm font-bold text-slate-900">{partyName(state, otherParty(active, me))}</h2>
+                    <p className="truncate text-[11px] text-slate-500">{partySubtitle(state, otherParty(active, me))}</p>
+                  </div>
+                </div>
+                <Badge tone="bg-slate-100 text-slate-500">{active.subject}</Badge>
+              </div>
+
+              <div className="thin-scroll flex-1 space-y-2.5 overflow-y-auto bg-slate-50 p-4">
+                {active.messages.map((m) => {
+                  const mine = samePartyAs(m.from, me);
+                  return (
+                    <div key={m.id} className={cx('flex', mine ? 'justify-end' : 'justify-start')}>
+                      <div className={cx('max-w-[80%] rounded-2xl px-3.5 py-2 shadow-sm', mine ? 'bg-slate-900 text-white' : 'bg-white text-slate-800')}>
+                        <p className="whitespace-pre-wrap text-sm leading-snug">{m.body}</p>
+                        <p className={cx('mt-1 text-[10px]', mine ? 'text-slate-400' : 'text-slate-400')}>
+                          {fmtDateTime(m.at)}
+                        </p>
+                      </div>
+                    </div>
+                  );
+                })}
+                <div ref={endRef} />
+              </div>
+
+              <div className="flex items-end gap-2 border-t border-slate-100 p-3">
+                <textarea
+                  className="input min-h-[44px] resize-y"
+                  rows={1}
+                  placeholder="Write a reply…"
+                  value={body}
+                  onChange={(e) => setBody(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && !e.shiftKey) {
+                      e.preventDefault();
+                      send();
+                    }
+                  }}
+                />
+                <button type="button" className={cx(btn, 'shrink-0')} onClick={send} disabled={!body.trim()}>
+                  <Send className="h-4 w-4" />
+                </button>
+              </div>
+            </>
+          ) : (
+            <EmptyState
+              icon={MessageSquare}
+              title="Select a conversation"
+              hint="Or start a new one. Enter sends; Shift+Enter adds a line."
+            />
+          )}
+        </section>
+      </div>
+    </div>
+  );
+}
+
+
+/* Follow-up reminders the patient can see and act on. Raised by the doctor when a
+   follow-up date is set on the consultation note. */
+function PatientReminders({ patient }) {
+  const { state, me, act } = useClinic();
+
+  const reminders = useMemo(
+    () =>
+      notificationsFor(state, me)
+        .filter((n) => n.kind === 'follow-up')
+        .sort((a, b) => a.dueDate.localeCompare(b.dueDate)),
+    [state, me],
+  );
+
+  if (!reminders.length) return null;
+
+  return (
+    <section className="card">
+      <div className="card-head">
+        <h2 className="card-title">Follow-up reminders</h2>
+        <Badge tone="bg-indigo-100 text-indigo-700">{reminders.length}</Badge>
+      </div>
+      <ul className="divide-y divide-slate-100">
+        {reminders.map((n) => {
+          const days = daysUntil(n.dueDate);
+          const overdue = days < 0;
+          const soon = days >= 0 && days <= 3;
+          const encounter = findBy(state.encounters, n.encounterId);
+          return (
+            <li key={n.id} className="flex flex-wrap items-start gap-3 px-4 py-3">
+              <span
+                className={cx(
+                  'grid h-9 w-9 shrink-0 place-items-center rounded-lg',
+                  overdue ? 'bg-rose-100 text-rose-700' : soon ? 'bg-amber-100 text-amber-800' : 'bg-indigo-50 text-indigo-700',
+                )}
+              >
+                <CalendarClock className="h-4 w-4" />
+              </span>
+              <div className="min-w-0 flex-1">
+                <div className="flex flex-wrap items-center gap-2">
+                  <p className="text-sm font-semibold text-slate-900">{n.title}</p>
+                  {!n.read && <Badge tone="bg-teal-100 text-teal-700">New</Badge>}
+                  {n.status === 'Sent' && (
+                    <Badge tone="bg-slate-100 text-slate-500" icon={CheckCircle2}>Reminder sent</Badge>
+                  )}
+                </div>
+                <p className="mt-0.5 text-xs text-slate-600">{n.body}</p>
+                <p
+                  className={cx(
+                    'mt-1 text-[11px] font-semibold',
+                    overdue ? 'text-rose-600' : soon ? 'text-amber-600' : 'text-slate-500',
+                  )}
+                >
+                  {overdue
+                    ? `Overdue by ${Math.abs(days)} day${Math.abs(days) === 1 ? '' : 's'} — please book a visit`
+                    : days === 0
+                      ? 'Due today'
+                      : `Due ${fmtDate(n.dueDate)} · in ${days} day${days === 1 ? '' : 's'}`}
+                  {encounter ? ` · from your ${fmtDate(encounter.date)} visit` : ''}
+                </p>
+              </div>
+              {!n.read && (
+                <button
+                  type="button"
+                  className="btn-ghost btn-sm"
+                  onClick={() => act({ type: 'MARK_NOTIFICATION_READ', id: n.id }, { silent: true })}
+                >
+                  Got it
+                </button>
+              )}
+            </li>
+          );
+        })}
+      </ul>
+    </section>
+  );
+}
+
+/* The desk's chase list: follow-ups coming due (or overdue) that nobody has sent
+   a reminder for yet. Sending is a simulated SMS — see CLAUDE.md gap 9. */
+function FollowUpQueue() {
+  const { state, act, toast } = useClinic();
+  const due = useMemo(() => dueReminders(state), [state]);
+  const upcoming = useMemo(
+    () =>
+      (state.notifications ?? [])
+        .filter((n) => n.kind === 'follow-up' && daysUntil(n.dueDate) > REMINDER_LEAD_DAYS)
+        .sort((a, b) => a.dueDate.localeCompare(b.dueDate)),
+    [state.notifications],
+  );
+
+  const sendOne = (n) => {
+    const patient = findBy(state.patients, n.to.id);
+    act({ type: 'SEND_REMINDER', id: n.id, at: new Date().toISOString() });
+    toast(`Reminder sent to ${patientName(patient)} · ${patient?.mobile ?? ''} (simulated SMS)`, 'success');
+  };
+
+  const sendAll = () => {
+    if (!due.length) return;
+    const at = new Date().toISOString();
+    for (const n of due) act({ type: 'SEND_REMINDER', id: n.id, at });
+    toast(`${due.length} follow-up reminder${due.length > 1 ? 's' : ''} sent (simulated SMS)`, 'success');
+  };
+
+  return (
+    <section className="card">
+      <div className="card-head">
+        <h2 className="card-title">Follow-ups to chase</h2>
+        <div className="flex items-center gap-2">
+          <Badge tone={due.length ? 'bg-amber-100 text-amber-800' : 'bg-slate-100 text-slate-500'}>
+            {due.length} due
+          </Badge>
+          {due.length > 0 && (
+            <button type="button" className="btn-sky btn-sm" onClick={sendAll}>
+              <Send className="h-3.5 w-3.5" /> Send all
+            </button>
+          )}
+        </div>
+      </div>
+
+      <ul className="divide-y divide-slate-100">
+        {due.length === 0 && (
+          <li>
+            <EmptyState
+              icon={CalendarClock}
+              title="Nothing due this week"
+              hint={`Reminders appear ${REMINDER_LEAD_DAYS} days before the follow-up date.`}
+            />
+          </li>
+        )}
+        {due.map((n) => {
+          const patient = findBy(state.patients, n.to.id);
+          const days = daysUntil(n.dueDate);
+          return (
+            <li key={n.id} className="flex flex-wrap items-center gap-3 px-4 py-3">
+              <Avatar name={patientName(patient)} tone="bg-sky-100 text-sky-700" size="h-8 w-8 text-[10px]" />
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-sm font-semibold text-slate-900">{patientName(patient)}</p>
+                <p className="truncate text-xs text-slate-500">{n.title}</p>
+                <p className="nums text-[11px] text-slate-400">{patient?.mobile}</p>
+              </div>
+              <div className="text-right">
+                <p className={cx('text-xs font-semibold', days < 0 ? 'text-rose-600' : 'text-amber-600')}>
+                  {days < 0 ? `${Math.abs(days)}d overdue` : days === 0 ? 'Today' : `in ${days}d`}
+                </p>
+                <p className="text-[11px] text-slate-400">{fmtDate(n.dueDate)}</p>
+              </div>
+              <button type="button" className="btn-ghost btn-sm" onClick={() => sendOne(n)}>
+                <Send className="h-3.5 w-3.5" /> Send
+              </button>
+            </li>
+          );
+        })}
+      </ul>
+
+      {upcoming.length > 0 && (
+        <p className="border-t border-slate-100 px-4 py-2 text-[11px] text-slate-500">
+          {upcoming.length} more follow-up{upcoming.length > 1 ? 's' : ''} scheduled further out — next on{' '}
+          {fmtDate(upcoming[0].dueDate)}.
+        </p>
+      )}
+    </section>
   );
 }
 
@@ -2668,7 +3803,7 @@ function EncounterCard({ encounter, patient, defaultOpen = false, showPatient = 
 /* ===== 7. Doctor portal ========================================================= */
 
 function DoctorPortal() {
-  const { state, doctorId, act, toast } = useClinic();
+  const { state, doctorId, act, toast, me } = useClinic();
   const [tab, setTab] = useState('overview');
   const [chartId, setChartId] = useState(null);
 
@@ -2699,6 +3834,7 @@ function DoctorPortal() {
     { id: 'overview', label: 'Overview', icon: LayoutGrid },
     { id: 'consult', label: 'Consultation', icon: Stethoscope, count: inConsult ? 1 : 0 },
     { id: 'records', label: 'Records', icon: ClipboardList },
+    { id: 'messages', label: 'Messages', icon: MessageSquare, count: unreadThreadCount(state, me) },
   ];
 
   return (
@@ -2715,9 +3851,11 @@ function DoctorPortal() {
             waiting={waiting}
             onCallIn={callIn}
             onDone={() => setTab('overview')}
+            onOpenChart={setChartId}
           />
         )}
         {tab === 'records' && <RecordsSearch onOpenChart={setChartId} />}
+        {tab === 'messages' && <MessagesPanel accent="teal" />}
       </main>
       <PatientChart patientId={chartId} open={!!chartId} onClose={() => setChartId(null)} />
     </>
@@ -2897,7 +4035,7 @@ const DISPOSITIONS = [
   'For observation',
 ];
 
-function ConsultationWorkspace({ item, waiting, onCallIn, onDone }) {
+function ConsultationWorkspace({ item, waiting, onCallIn, onDone, onOpenChart }) {
   const { state, doctorId, act, toast, openPrint } = useClinic();
   const patient = findBy(state.patients, item?.patientId);
   const doctor = findBy(state.doctors, doctorId);
@@ -3029,15 +4167,39 @@ function ConsultationWorkspace({ item, waiting, onCallIn, onDone }) {
       cashier: 'Front desk',
     };
 
+    /* Setting a follow-up date on the note is all it takes to raise the patient's
+       reminder — the desk then sees it in the follow-up queue to send. */
+    const followUpNotification = draft.followUp
+      ? {
+          id: nextId('N', state.notifications),
+          to: { kind: 'patient', id: item.patientId },
+          kind: 'follow-up',
+          title: `Follow-up with ${doctorName(doctor)}`,
+          body:
+            `${fmtDate(draft.followUp)} — ${draft.diagnoses[0]?.label || draft.soap.a.slice(0, 60) || 'review'}.` +
+            (draft.disposition === 'For labs, follow-up' ? ' Please have your labs done before the visit.' : ''),
+          dueDate: draft.followUp,
+          encounterId: encounter.id,
+          createdAt: now,
+          read: false,
+          status: 'Scheduled',
+        }
+      : null;
+
     act({
       type: 'COMPLETE_CONSULT',
       queueId: item.id,
       appointmentId: item.appointmentId,
       encounter,
       invoice,
+      followUpNotification,
       completedAt: now,
     });
-    toast(`${patientName(patient)} discharged · ${invoice.id} sent to billing`, 'success');
+    toast(
+      `${patientName(patient)} discharged · ${invoice.id} sent to billing` +
+        (followUpNotification ? ` · follow-up reminder set for ${fmtDate(draft.followUp)}` : ''),
+      'success',
+    );
     onDone();
   };
 
@@ -3070,6 +4232,13 @@ function ConsultationWorkspace({ item, waiting, onCallIn, onDone }) {
             </div>
           </div>
           <div className="text-right text-xs text-slate-500">
+            <button
+              type="button"
+              className="btn-ghost btn-sm mb-1.5"
+              onClick={() => onOpenChart?.(item.patientId)}
+            >
+              <ClipboardList className="h-3.5 w-3.5" /> Open chart
+            </button>
             <div className="nums font-semibold text-slate-700">Queue #{item.number}</div>
             <div>waited {fmtDuration(waitedFor)}</div>
             {savedAt && (
@@ -3259,13 +4428,21 @@ function ConsultationWorkspace({ item, waiting, onCallIn, onDone }) {
 
 function DiagnosisPicker({ diagnoses, onChange }) {
   const [query, setQuery] = useState('');
-  const results = useMemo(() => {
+
+  /* The whole list scrolls, grouped by ICD-10 chapter. Searching filters across
+     both the code and the term, and collapses to the chapters that still match. */
+  const grouped = useMemo(() => {
     const q = query.trim().toLowerCase();
-    if (!q) return ICD10.slice(0, 6);
-    return ICD10.filter(
-      (d) => d.code.toLowerCase().includes(q) || d.label.toLowerCase().includes(q),
-    ).slice(0, 8);
+    const matches = q
+      ? ICD10.filter((d) => d.code.toLowerCase().includes(q) || d.label.toLowerCase().includes(q))
+      : ICD10;
+    return ICD10_GROUPS.map((group) => ({
+      group,
+      rows: matches.filter((d) => d.group === group),
+    })).filter((g) => g.rows.length > 0);
   }, [query]);
+
+  const total = grouped.reduce((n, g) => n + g.rows.length, 0);
 
   const add = (d) => {
     if (diagnoses.some((x) => x.code === d.code)) return;
@@ -3309,45 +4486,109 @@ function DiagnosisPicker({ diagnoses, onChange }) {
           />
         </div>
 
-        <ul className="mt-2 max-h-56 space-y-0.5 overflow-y-auto thin-scroll">
-          {results.map((d) => (
-            <li key={d.code}>
-              <button
-                type="button"
-                onClick={() => add(d)}
-                className="flex w-full items-start gap-2 rounded-lg px-2 py-1.5 text-left transition hover:bg-slate-50"
-              >
-                <span className="nums mt-0.5 w-12 shrink-0 text-xs font-bold text-slate-500">{d.code}</span>
-                <span className="flex-1 text-xs leading-snug text-slate-700">{d.label}</span>
-                <Plus className="mt-0.5 h-3.5 w-3.5 shrink-0 text-slate-400" />
-              </button>
-            </li>
-          ))}
-          {results.length === 0 && (
-            <li className="px-2 py-3 text-center text-xs text-slate-400">
-              No match in the curated subset.
-            </li>
+        <p className="mt-1.5 text-[11px] text-slate-400">
+          {total} of {ICD10.length} codes{query.trim() ? ' match' : ' — scroll the list'}
+        </p>
+
+        <div className="thin-scroll mt-1 max-h-80 overflow-y-auto rounded-lg border border-slate-100">
+          {grouped.length === 0 && (
+            <p className="px-2 py-4 text-center text-xs text-slate-400">
+              No match in this subset. Record it in the assessment instead.
+            </p>
           )}
-        </ul>
+          {grouped.map((g) => (
+            <div key={g.group}>
+              <p className="sticky top-0 z-10 border-b border-slate-100 bg-slate-50/95 px-2.5 py-1 text-[10px] font-bold uppercase tracking-wide text-slate-500 backdrop-blur">
+                {g.group}
+              </p>
+              <ul className="space-y-0.5 p-1">
+                {g.rows.map((d) => {
+                  const picked = diagnoses.some((x) => x.code === d.code);
+                  return (
+                    <li key={d.code}>
+                      <button
+                        type="button"
+                        onClick={() => add(d)}
+                        disabled={picked}
+                        className={cx(
+                          'flex w-full items-start gap-2 rounded-lg px-2 py-1.5 text-left transition',
+                          picked ? 'cursor-default bg-teal-50/60 opacity-60' : 'hover:bg-slate-50',
+                        )}
+                      >
+                        <span className="nums mt-0.5 w-14 shrink-0 text-xs font-bold text-slate-500">{d.code}</span>
+                        <span className="flex-1 text-xs leading-snug text-slate-700">{d.label}</span>
+                        {picked ? (
+                          <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0 text-teal-600" />
+                        ) : (
+                          <Plus className="mt-0.5 h-3.5 w-3.5 shrink-0 text-slate-400" />
+                        )}
+                      </button>
+                    </li>
+                  );
+                })}
+              </ul>
+            </div>
+          ))}
+        </div>
       </div>
     </section>
   );
 }
 
-const emptyMedForm = { itemId: '', freq: 'TID', days: 7, qty: '', route: 'PO', instructions: '', qtyTouched: false };
+const emptyMedForm = { generic: '', itemId: '', freq: 'TID', days: 7, qty: '', route: 'PO', instructions: '', qtyTouched: false };
+
+/* Units that are dispensed whole — one bottle, one tube — rather than per dose,
+   so frequency x days is the wrong quantity to suggest for them. */
+const WHOLE_PACK_UNITS = ['bottle', 'tube', 'vial', 'amp', 'pc', 'respule', 'sachet'];
+
+/* The route a form implies, so picking a nebule doesn't leave the route on PO. */
+const routeForForm = (form = '') => {
+  const f = form.toLowerCase();
+  if (f.includes('nebule') || f.includes('respule')) return 'Nebulization';
+  if (f.includes('inhaler')) return 'Inhalation';
+  if (f.includes('eye')) return 'Ophthalmic';
+  if (f.includes('otic')) return 'Otic';
+  if (f.includes('nasal')) return 'Inhalation';
+  if (f.includes('cream') || f.includes('ointment') || f.includes('gel')) return 'Topical';
+  if (f.includes('ampule') || f.includes('vial')) return 'IM';
+  return 'PO';
+};
 
 function MedicationBuilder({ meds, patient, onChange }) {
   const { state, toast } = useClinic();
   const [form, setForm] = useState(emptyMedForm);
   const [acknowledged, setAcknowledged] = useState(false);
 
+  /* Step 1 picks the generic; step 2 picks the strength + form variant stocked
+     under it (500 mg tablet vs 250 mg/5 mL syrup vs 100 mg/mL drops…). */
+  const generics = useMemo(() => {
+    const byName = new Map();
+    for (const i of state.inventory) {
+      if (!byName.has(i.name)) byName.set(i.name, { name: i.name, category: i.category, variants: [] });
+      byName.get(i.name).variants.push(i);
+    }
+    return [...byName.values()].sort((a, b) => a.name.localeCompare(b.name));
+  }, [state.inventory]);
+
+  const genericGroups = useMemo(() => {
+    const cats = [...new Set(generics.map((g) => g.category))].sort();
+    return cats.map((c) => ({ category: c, rows: generics.filter((g) => g.category === c) }));
+  }, [generics]);
+
+  const variants = useMemo(
+    () => generics.find((g) => g.name === form.generic)?.variants ?? [],
+    [generics, form.generic],
+  );
+
   const item = findBy(state.inventory, form.itemId);
-  const flags = useMemo(() => allergyFlags(patient, item?.name), [patient, item]);
+  const flags = useMemo(() => allergyFlags(patient, item?.name || form.generic), [patient, item, form.generic]);
   const blocking = flags.filter((f) => f.severity === 'high');
   const stock = item ? stockStatus(item) : null;
 
-  /* Quantity follows frequency x days until the doctor overrides it by hand. */
-  const suggestedQty = autoQty(form.freq, form.days);
+  /* Quantity follows frequency x days until the doctor overrides it by hand —
+     except for whole-pack units, where one pack is the sane default. */
+  const wholePack = !!item && WHOLE_PACK_UNITS.includes(item.unit);
+  const suggestedQty = wholePack ? 1 : autoQty(form.freq, form.days);
   const qty = form.qtyTouched ? form.qty : suggestedQty;
   const shortStock = item && Number(qty) > Number(item.stock);
 
@@ -3427,19 +4668,62 @@ function MedicationBuilder({ meds, patient, onChange }) {
 
       <div className="space-y-3 border-t border-slate-100 bg-slate-50 p-4">
         <div className="grid gap-3 sm:grid-cols-2">
-          <Field label="Medication" className="sm:col-span-2">
+          <Field label="Medication (generic)" className="sm:col-span-2" hint={`${generics.length} generics · ${state.inventory.length} stocked variants`}>
             <select
               className="input"
-              value={form.itemId}
+              value={form.generic}
               onChange={(e) => {
-                setForm((f) => ({ ...f, itemId: e.target.value }));
+                const generic = e.target.value;
+                const first = generics.find((g) => g.name === generic)?.variants[0];
+                setForm((f) => ({
+                  ...f,
+                  generic,
+                  itemId: first?.id ?? '',
+                  route: first ? routeForForm(first.form) : f.route,
+                  qtyTouched: false,
+                }));
                 setAcknowledged(false);
               }}
             >
               <option value="">Select from formulary…</option>
-              {state.inventory.map((i) => (
-                <option key={i.id} value={i.id}>
-                  {i.name} {i.strength} · {i.form} ({i.stock} {i.unit} on hand)
+              {genericGroups.map((g) => (
+                <optgroup key={g.category} label={g.category}>
+                  {g.rows.map((row) => (
+                    <option key={row.name} value={row.name}>
+                      {row.name}
+                      {row.variants.length > 1 ? ` (${row.variants.length} variants)` : ''}
+                    </option>
+                  ))}
+                </optgroup>
+              ))}
+            </select>
+          </Field>
+
+          <Field
+            label="Strength / variant"
+            className="sm:col-span-2"
+            hint={item ? `${item.stock} ${item.unit} on hand · ${peso(item.price)} per ${item.unit}` : 'Pick a generic first.'}
+          >
+            <select
+              className="input"
+              value={form.itemId}
+              disabled={!form.generic}
+              onChange={(e) => {
+                const picked = findBy(state.inventory, e.target.value);
+                setForm((f) => ({
+                  ...f,
+                  itemId: e.target.value,
+                  route: picked ? routeForForm(picked.form) : f.route,
+                  qtyTouched: false,
+                }));
+                setAcknowledged(false);
+              }}
+            >
+              {!form.generic && <option value="">—</option>}
+              {variants.map((v) => (
+                <option key={v.id} value={v.id}>
+                  {v.strength} · {v.form}
+                  {stockStatus(v) === 'Out of Stock' ? ' — out of stock' : ''}
                 </option>
               ))}
             </select>
@@ -3468,7 +4752,16 @@ function MedicationBuilder({ meds, patient, onChange }) {
             />
           </Field>
 
-          <Field label="Quantity to dispense" hint={suggestedQty ? `Auto: ${suggestedQty} from ${form.freq} x ${form.days}d` : 'PRN — enter manually'}>
+          <Field
+            label={`Quantity to dispense${item ? ` (${item.unit})` : ''}`}
+            hint={
+              wholePack
+                ? `Dispensed whole — defaults to 1 ${item.unit}`
+                : suggestedQty
+                  ? `Auto: ${suggestedQty} from ${form.freq} x ${form.days}d`
+                  : 'PRN — enter manually'
+            }
+          >
             <input
               type="number"
               min={1}
@@ -3698,7 +4991,7 @@ function RecordsSearch({ onOpenChart }) {
 /* ===== 8. Patient portal ======================================================== */
 
 function PatientPortal() {
-  const { state, patientId } = useClinic();
+  const { state, patientId, me } = useClinic();
   const [tab, setTab] = useState('home');
   const patient = findBy(state.patients, patientId);
 
@@ -3710,6 +5003,7 @@ function PatientPortal() {
     { id: 'home', label: 'My visit', icon: Home },
     { id: 'book', label: 'Book appointment', icon: CalendarPlus, count: upcoming.length },
     { id: 'records', label: 'My records', icon: FileText },
+    { id: 'messages', label: 'Messages', icon: MessageSquare, count: unreadThreadCount(state, me) },
   ];
 
   return (
@@ -3719,6 +5013,7 @@ function PatientPortal() {
         {tab === 'home' && <PatientDashboard patient={patient} onBook={() => setTab('book')} />}
         {tab === 'book' && <BookAppointment patient={patient} onBooked={() => setTab('home')} />}
         {tab === 'records' && <PatientRecords patient={patient} />}
+        {tab === 'messages' && <MessagesPanel accent="indigo" />}
       </main>
     </>
   );
@@ -3817,6 +5112,8 @@ function PatientDashboard({ patient, onBook }) {
           </button>
         </section>
       )}
+
+      <PatientReminders patient={patient} />
 
       <div className="grid gap-4 sm:grid-cols-2">
         <section className="card card-pad">
@@ -4324,7 +5621,7 @@ function PatientRecords({ patient }) {
 /* ===== 9. Staff portal ========================================================== */
 
 function StaffPortal() {
-  const { state } = useClinic();
+  const { state, me } = useClinic();
   const [tab, setTab] = useState('queue');
   const [chartId, setChartId] = useState(null);
   const [checkInFor, setCheckInFor] = useState(undefined); // undefined = closed, null = new, patient = prefilled
@@ -4339,6 +5636,8 @@ function StaffPortal() {
     { id: 'patients', label: 'Patients', icon: ClipboardList },
     { id: 'pharmacy', label: 'Pharmacy', icon: Boxes, count: lowStock.length },
     { id: 'billing', label: 'Billing', icon: PhilippinePeso, count: pending.length },
+    { id: 'followups', label: 'Follow-ups', icon: CalendarClock, count: dueReminders(state).length },
+    { id: 'messages', label: 'Messages', icon: MessageSquare, count: unreadThreadCount(state, me) },
   ];
 
   return (
@@ -4357,6 +5656,8 @@ function StaffPortal() {
         )}
         {tab === 'pharmacy' && <Pharmacy />}
         {tab === 'billing' && <Billing />}
+        {tab === 'followups' && <FollowUpQueue />}
+        {tab === 'messages' && <MessagesPanel accent="sky" />}
       </main>
       <PatientChart
         patientId={chartId}
@@ -5943,6 +7244,7 @@ export default function App() {
   const [role, setRole] = useState(initialRole);
   const [doctorId, setDoctorId] = useState('D-0001');
   const [patientId, setPatientId] = useState('P-0005');
+  const [staffId, setStaffId] = useState('S-0001');
   const [toasts, setToasts] = useState([]);
   const [printJob, setPrintJob] = useState(null);
   const [outbox, setOutbox] = useState(0);
@@ -5986,7 +7288,8 @@ export default function App() {
   useEffect(() => {
     if (!findBy(state.doctors, doctorId) && state.doctors[0]) setDoctorId(state.doctors[0].id);
     if (!findBy(state.patients, patientId) && state.patients[0]) setPatientId(state.patients[0].id);
-  }, [state.doctors, state.patients, doctorId, patientId]);
+    if (!findBy(state.staff, staffId) && state.staff[0]) setStaffId(state.staff[0].id);
+  }, [state.doctors, state.patients, state.staff, doctorId, patientId, staffId]);
 
   const value = useMemo(
     () => ({
@@ -5997,6 +7300,10 @@ export default function App() {
       setDoctorId,
       patientId,
       setPatientId,
+      staffId,
+      setStaffId,
+      /* Who the current portal is acting as, in messaging/notification terms. */
+      me: { kind: role, id: role === 'doctor' ? doctorId : role === 'patient' ? patientId : staffId },
       toast,
       openPrint,
       outbox,
@@ -6007,7 +7314,7 @@ export default function App() {
       simulatedOffline: network.simulatedOffline,
       setSimulatedOffline: network.setSimulatedOffline,
     }),
-    [state, act, role, doctorId, patientId, toast, openPrint, outbox, swState, resetDemo, network],
+    [state, act, role, doctorId, patientId, staffId, toast, openPrint, outbox, swState, resetDemo, network],
   );
 
   return (

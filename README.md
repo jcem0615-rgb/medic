@@ -23,9 +23,9 @@ npm run build && npm run preview   # http://localhost:4173
 
 | Portal | Screens |
 |---|---|
-| **Staff** | Now-serving board, check-in (existing or new patient, triage vitals, priority lane), queue status controller, patient directory, pharmacy stock, billing and payment collection |
-| **Doctor** | Daily overview with KPIs and check-ins by hour, consultation workspace (vitals, SOAP with templates, ICD-10, prescribing with allergy + stock checks), records search |
-| **Patient** | Live queue position, next appointment, teleconsult waiting room, appointment booking, prescriptions and visit history |
+| **Staff** | Now-serving board, check-in (existing or new patient, triage vitals, priority lane), queue status controller, patient directory, pharmacy stock, billing and payment collection, follow-up chase list, messages |
+| **Doctor** | Daily overview with KPIs and check-ins by hour, consultation workspace (vitals, SOAP with templates, 161-code ICD-10 picker, prescribing with allergy + stock checks, patient chart on hand), records search, messages |
+| **Patient** | Live queue position, follow-up reminders, next appointment, teleconsult waiting room, appointment booking, prescriptions and visit history, messages to their doctors |
 
 ### The main flow
 
@@ -35,6 +35,17 @@ Doctor "Call in"      → queue [In Consultation]   (the note autosaves as you t
 Doctor "Complete"     → encounter + pending statement, queue [Completed]
 Staff "Receive payment" → statement Paid, dispensed stock deducted from the pharmacy
 ```
+
+### Follow-ups and messaging
+
+Setting a follow-up date on a consultation note raises the patient's reminder automatically. The patient
+sees it on their dashboard and in the bell; the front desk sees it in **Follow-ups** once it is within a
+week of being due, and can send it (a simulated SMS).
+
+Messaging is deliberately restricted: **doctor↔patient** and **doctor↔staff** only. A patient and a
+front-desk clerk never share a thread — clinical questions go to the doctor, and anything administrative
+reaches the patient through their attending doctor or the phone. The rule lives in `MESSAGING_RULES` and
+is enforced both in the compose list and in the reducer.
 
 Open the app in **two tabs** — Staff in one, Doctor in the other — and the queue moves in both: state
 syncs across tabs through the `storage` event.
@@ -50,6 +61,10 @@ syncs across tabs through the `storage` event.
   automatically at age 60+.
 - **Stock gating** — Salbutamol MDI is seeded out of stock, Azithromycin low. Billing won't let you
   dispense what the shelf cannot cover.
+- **Variants** — prescribe Paracetamol and the second dropdown offers tablet, syrup, drops and ampule;
+  pick a nebule and the route switches to Nebulization, pick a bottle and the quantity defaults to 1.
+- **Reminders** — as Staff, open *Follow-ups*: Teresita Gonzales is overdue, Rowena Castillo is due in
+  two days. Send one and switch to that patient to see it marked.
 - **Printing** — prescriptions, medical certificates, medical abstracts and billing statements all print
   on the clinic letterhead. Use the print dialog to save as PDF.
 

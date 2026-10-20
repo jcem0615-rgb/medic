@@ -29,15 +29,16 @@ src/App.jsx                Whole app — sections marked `// ===== N.`
 
 ### App.jsx sections
 1. **Constants & utilities** — CLINIC letterhead, FREQUENCIES (OD/BID/TID/…/PRN with perDay), ICD10 list (WHO codes as used by PhilHealth), ALLERGY_RULES, `autoQty`, `invoiceTotals`, `stockStatus`, `isRxActive`, `nextId`.
-2. **Seed data** — `buildSeed()`; 4 doctors, 10 patients, 17 inventory items, 14 encounters (SOAP + meds), invoices, 7 queue items, 5 appointments. Today's queue is anchored to *now* (`ago(mins)`) so the demo always looks live.
+2. **Seed data** — `buildSeed()`; 4 doctors, 3 staff, 10 patients, 108 formulary items, 14 encounters (SOAP + meds), invoices, 7 queue items, 5 appointments, 4 message threads, 6 notifications. Today's queue is anchored to *now* (`ago(mins)`) so the demo always looks live.
 3. **Store** — one pure `reducer` + `usePersistentStore` (localStorage key `mediclinic:v1`, `SCHEMA_VERSION`). Cross-tab sync via the `storage` event → open Staff and Doctor in two tabs to watch the queue move.
 4. **PWA hooks & shell** — `useNetwork` (real + simulated offline), `useServiceWorkerState`, Header, LiveClock, PwaStatus popover (simulate offline, reset demo), InstallBanner (`beforeinstallprompt` + fallback hint), Toasts, SubNav.
 5. **UI primitives** — Badge/StatusBadge, SlideOver, Modal, StatCard, FakeQR, VitalsStrip, AllergyBadges, HourlyBars.
+5b. **Messaging & notifications** — `MESSAGING_RULES` + `canMessage`, `threadsFor`/`unreadThreadCount`/`notificationsFor`/`dueReminders`, `NotificationBell` (header), `MessagesPanel` (shared inbox for all three portals), `PatientReminders`, `FollowUpQueue`.
 6. **Print Center & documents** — `PrintCenter` renders a preview in a modal *and* portals a clean copy into `#print-root`; `@media print` hides `#root` and shows only `#print-root`, so multi-page docs paginate correctly. Documents: `MedicalCertificateDoc` (kind = certificate | abstract), `PrescriptionDoc`, `ReceiptDoc`.
    Also `PatientChart` (shared slide-over used by Doctor records and Staff directory; role-gated actions) and `EncounterCard`.
-7. **Doctor portal** — Overview (KPIs, live queue, check-ins by hour, today's appts), `ConsultationWorkspace` (vitals, SOAP + templates, ICD-10, `MedicationBuilder` with allergy + stock checks, disposition, draft autosave into the queue item), `RecordsSearch`.
-8. **Patient portal** — Dashboard (live queue position, next appt, teleconsult waiting room), `BookAppointment` (dept → doctor → date/slot → mode → complaint), `PatientRecords` (active/past Rx, simulated QR verification, downloadable summaries).
-9. **Staff portal** — `ReceptionQueue` (now-serving board, `CheckInForm` existing/new patient, priority toggle, status controller, appointment check-in), `PatientDirectory`, `Pharmacy` (restock, inline price edit, add item), `Billing` + `InvoiceEditor` (dispense toggles, lab presets, SC/PWD 20% discount, Cash/GCash/Maya/Card, change computation, stock deduction on payment).
+7. **Doctor portal** — Overview (KPIs, live queue, check-ins by hour, today's appts), `ConsultationWorkspace` (vitals, SOAP + templates, ICD-10, `MedicationBuilder`, disposition, draft autosave into the queue item, **Open chart** for the patient in the room), `RecordsSearch`, Messages.
+8. **Patient portal** — Dashboard (live queue position, follow-up reminders, next appt, teleconsult waiting room), `BookAppointment` (dept → doctor → date/slot → mode → complaint), `PatientRecords` (active/past Rx, simulated QR verification, downloadable summaries), Messages (doctors only).
+9. **Staff portal** — `ReceptionQueue` (now-serving board, `CheckInForm` existing/new patient, priority toggle, status controller, appointment check-in), `PatientDirectory`, `Pharmacy` (restock, inline price edit, add item), `Billing` + `InvoiceEditor` (dispense toggles, lab presets, SC/PWD 20% discount, Cash/GCash/Maya/Card, change computation, stock deduction on payment), `FollowUpQueue`, Messages (doctors only).
 10. **App root** — context provider (store + act + toasts + print + role identities), offline outbox counter, `?portal=` deep links from the manifest shortcuts.
 
 ## Data flow (the important bit)
@@ -46,11 +47,28 @@ Staff check-in ──ADD_QUEUE──▶ queue[Waiting]
 Doctor "Call in" ──UPDATE_QUEUE──▶ queue[In Consultation]  (draft autosaves to queue.draft)
 Doctor "Complete & discharge" ──COMPLETE_CONSULT──▶ encounters[+1], invoices[+1 Pending], queue[Completed]
 Staff "Receive payment & dispense" ──PAY_INVOICE──▶ invoice Paid, inventory stock −= dispensed qty
+
+Doctor sets a follow-up date ──COMPLETE_CONSULT(followUpNotification)──▶ notifications[+1 Scheduled]
+Staff "Send" in Follow-ups ──SEND_REMINDER──▶ notification Sent (simulated SMS)
+Anyone sends a message ──SEND_MESSAGE──▶ threads[append | +1]  (pairing re-checked in the reducer)
 ```
 - All mutations go through `act(action, { silent })` from context. When offline, non-silent actions increment a
   simulated outbox counter that "syncs" on reconnect. This is the seam for a real outbox.
 - IDs are computed *outside* the reducer with `nextId(prefix, list)` so the reducer stays pure (StrictMode-safe).
 - Senior Citizen discount is auto-suggested at age ≥ 60.
+
+## Messaging policy (don't loosen this by accident)
+`MESSAGING_RULES` is the single source of truth: **doctor↔patient** and **doctor↔staff** are allowed,
+**patient↔staff is not**. Clinical questions go patient→doctor; anything the front desk needs a patient to
+know goes through the attending doctor or the phone. The rule is enforced in two places — the compose
+recipient list is built from it, *and* `SEND_MESSAGE` re-checks it in the reducer, so a hand-crafted
+dispatch can't create a forbidden thread. Threads are two-party only.
+
+## Formulary
+108 stocked items across ~81 generics. A generic may have several variants (strength + form): Paracetamol
+alone is tablet / syrup / drops / ampule. `MedicationBuilder` is therefore two-step — generic, then
+strength-variant — and `routeForForm` sets the route from the chosen form. `WHOLE_PACK_UNITS` (bottle,
+tube, vial, amp, pc, respule, sachet) suggest a quantity of 1 instead of `autoQty`'s doses x days.
 
 ## Conventions
 - Currency `peso()` (en-PH, ₱). Dates: date-only fields are `YYYY-MM-DD` strings (`ymd`), timestamps are ISO.
@@ -69,8 +87,8 @@ Staff "Receive payment & dispense" ──PAY_INVOICE──▶ invoice Paid, inve
 6. **Payments.** GCash/Maya/Card record the method and a reference number only — no gateway.
 7. **Clinical safety.** Allergy check is keyword-based (`ALLERGY_RULES`), no drug–drug interaction database, ICD list is a short curated subset.
 8. **Data Privacy Act (R.A. 10173).** No consent capture, audit log, or access logging yet — required before real patient data.
-9. **Scheduling.** Doctor schedules are display-only; booking doesn't enforce clinic days. No SMS reminders (text says "simulated").
-10. **No tests.** Recommended: Vitest for `reducer`, `invoiceTotals`, `autoQty`, `allergyFlags`; Playwright for the check-in → consult → billing flow.
+9. **Scheduling & reminders.** Doctor schedules are display-only; booking doesn't enforce clinic days. Follow-up reminders are raised and tracked in-app, but "Send" is a simulated SMS — no gateway, no delivery receipt. Messaging has no push notification, typing state, attachments or delivery/read receipts beyond the local `read` flag.
+10. **No tests in the repo.** Recommended: Vitest for `reducer`, `invoiceTotals`, `autoQty`, `allergyFlags`, `canMessage`; Playwright for check-in → consult → billing and for the messaging policy.
 
 ## Suggested build order (next sessions)
 1. Split `App.jsx` into `features/{doctor,patient,staff,print}` + `store/` + `lib/` (keep behavior identical; add Vitest first).
