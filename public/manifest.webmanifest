@@ -11,15 +11,29 @@
   "theme_color": "#0f766e",
   "lang": "en-PH",
   "dir": "ltr",
-  "categories": ["medical", "health", "productivity"],
-  "icons": [
-    { "src": "/icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
-    { "src": "/icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
-    { "src": "/icons/maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  "categories": [
+    "medical",
+    "health",
+    "productivity"
   ],
-  "shortcuts": [
-    { "name": "Reception queue", "short_name": "Queue", "url": "/?portal=staff" },
-    { "name": "Doctor overview", "short_name": "Doctor", "url": "/?portal=doctor" },
-    { "name": "My appointments", "short_name": "Patient", "url": "/?portal=patient" }
+  "icons": [
+    {
+      "src": "/icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icons/maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
   ]
 }

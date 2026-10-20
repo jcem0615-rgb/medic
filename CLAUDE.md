@@ -3,9 +3,9 @@
 Handoff notes for Claude Code. Read this first, then `src/App.jsx`.
 
 ## What this is
-MediClinic is a Progressive Web App for a small Philippine outpatient clinic with three role portals —
-**Doctor**, **Patient**, **Staff/Receptionist** — switchable from the header. Everything runs client-side
-on seeded mock data; there is no backend yet.
+MediClinic is a Progressive Web App for a **single-doctor** Philippine outpatient clinic with three role
+portals — **Doctor**, **Patient**, **Staff/Receptionist**. The portal you get is decided by the account you
+sign in with. Everything runs client-side on seeded mock data; there is no backend yet.
 
 Stack: React 18 + Vite 5, Tailwind CSS 3, lucide-react. Single-file app by design (`src/App.jsx`, ~6k lines)
 per the original brief.
@@ -29,16 +29,18 @@ src/App.jsx                Whole app — sections marked `// ===== N.`
 
 ### App.jsx sections
 1. **Constants & utilities** — CLINIC letterhead, FREQUENCIES (OD/BID/TID/…/PRN with perDay), ICD10 list (WHO codes as used by PhilHealth), ALLERGY_RULES, `autoQty`, `invoiceTotals`, `stockStatus`, `isRxActive`, `nextId`.
-2. **Seed data** — `buildSeed()`; 4 doctors, 3 staff, 10 patients, 108 formulary items, 14 encounters (SOAP + meds), invoices, 7 queue items, 5 appointments, 4 message threads, 6 notifications. Today's queue is anchored to *now* (`ago(mins)`) so the demo always looks live.
+2. **Seed data** — `buildSeed()`; 1 doctor, 3 staff, 10 patients, 14 accounts, 108 formulary items, 14 encounters (SOAP + meds), invoices, 7 queue items, 5 appointments, 4 message threads, 6 notifications, the editable `clinic` letterhead and `rxTemplate`. Today's queue is anchored to *now* (`ago(mins)`) so the demo always looks live.
 3. **Store** — one pure `reducer` + `usePersistentStore` (localStorage key `mediclinic:v1`, `SCHEMA_VERSION`). Cross-tab sync via the `storage` event → open Staff and Doctor in two tabs to watch the queue move.
 4. **PWA hooks & shell** — `useNetwork` (real + simulated offline), `useServiceWorkerState`, Header, LiveClock, PwaStatus popover (simulate offline, reset demo), InstallBanner (`beforeinstallprompt` + fallback hint), Toasts, SubNav.
+4b. **Authentication** — `useSession` (localStorage when "remember me" is ticked, sessionStorage otherwise),
+    `LoginScreen`, `ForcePasswordChange`, `AccountsPanel`. See **Accounts** below.
 5. **UI primitives** — Badge/StatusBadge, SlideOver, Modal, StatCard, FakeQR, VitalsStrip, AllergyBadges, HourlyBars.
 5b. **Messaging & notifications** — `MESSAGING_RULES` + `canMessage`, `threadsFor`/`unreadThreadCount`/`notificationsFor`/`dueReminders`, `NotificationBell` (header), `MessagesPanel` (shared inbox for all three portals), `PatientReminders`, `FollowUpQueue`.
 6. **Print Center & documents** — `PrintCenter` renders a preview in a modal *and* portals a clean copy into `#print-root`; `@media print` hides `#root` and shows only `#print-root`, so multi-page docs paginate correctly. Documents: `MedicalCertificateDoc` (kind = certificate | abstract), `PrescriptionDoc`, `ReceiptDoc`.
    Also `PatientChart` (shared slide-over used by Doctor records and Staff directory; role-gated actions) and `EncounterCard`.
-7. **Doctor portal** — Overview (KPIs, live queue, check-ins by hour, today's appts), `ConsultationWorkspace` (vitals, SOAP + templates, ICD-10, `MedicationBuilder`, disposition, draft autosave into the queue item, **Open chart** for the patient in the room), `RecordsSearch`, Messages.
+7. **Doctor portal** — Overview (KPIs, live queue, check-ins by hour, today's appts), `ConsultationWorkspace` (vitals, SOAP + templates, ICD-10, `MedicationBuilder`, disposition, draft autosave into the queue item, **Open chart** for the patient in the room), `RecordsSearch`, Messages, Accounts, and `DoctorSettings` (signature block, prescription template, letterhead — with a live preview of the real document).
 8. **Patient portal** — Dashboard (live queue position, follow-up reminders, next appt, teleconsult waiting room), `BookAppointment` (dept → doctor → date/slot → mode → complaint), `PatientRecords` (active/past Rx, simulated QR verification, downloadable summaries), Messages (doctors only).
-9. **Staff portal** — `ReceptionQueue` (now-serving board, `CheckInForm` existing/new patient, priority toggle, status controller, appointment check-in), `PatientDirectory`, `Pharmacy` (restock, inline price edit, add item), `Billing` + `InvoiceEditor` (dispense toggles, lab presets, SC/PWD 20% discount, Cash/GCash/Maya/Card, change computation, stock deduction on payment), `FollowUpQueue`, Messages (doctors only).
+9. **Staff portal** — `ReceptionQueue` (now-serving board, `CheckInForm` existing/new patient, priority toggle, status controller, appointment check-in), `PatientDirectory`, `Pharmacy` (restock, inline price edit, add item), `Billing` + `InvoiceEditor` (dispense toggles, lab presets, SC/PWD 20% discount, Cash/GCash/Maya/Card, change computation, stock deduction on payment), `FollowUpQueue`, Messages (doctors only), Accounts.
 10. **App root** — context provider (store + act + toasts + print + role identities), offline outbox counter, `?portal=` deep links from the manifest shortcuts.
 
 ## Data flow (the important bit)
@@ -57,12 +59,34 @@ Anyone sends a message ──SEND_MESSAGE──▶ threads[append | +1]  (pairin
 - IDs are computed *outside* the reducer with `nextId(prefix, list)` so the reducer stays pure (StrictMode-safe).
 - Senior Citizen discount is auto-suggested at age ≥ 60.
 
+## Accounts (simulated auth — read this before trusting it)
+Everyone signs in with **e-mail address or mobile number** (`matchesIdentifier` compares phone numbers
+digits-only). The default password is `DEFAULT_PASSWORD` = **123456**; every seeded account carries
+`mustChangePassword: true`, so `ForcePasswordChange` blocks the app until a different password of at
+least `MIN_PASSWORD_LENGTH` is set. There is no self-service reset: the doctor or any staff member resets
+an account from **Accounts**, which puts it back on the default and re-arms the forced change.
+
+The session is the only thing kept outside the store, under `mediclinic:session` — localStorage when
+"remember me" is ticked, sessionStorage when it is not. `role` comes from `user.kind`, so the old demo
+role switcher is gone; the login screen lists demo accounts instead.
+
+**This is not security.** Passwords sit in localStorage in plain text, there is no hashing, no rate
+limiting and no server to enforce any of it — a user can edit their own role in devtools. It is a
+faithful *interface* for auth, standing in until Supabase Auth + RLS (gap 1).
+
 ## Messaging policy (don't loosen this by accident)
 `MESSAGING_RULES` is the single source of truth: **doctor↔patient** and **doctor↔staff** are allowed,
 **patient↔staff is not**. Clinical questions go patient→doctor; anything the front desk needs a patient to
 know goes through the attending doctor or the phone. The rule is enforced in two places — the compose
 recipient list is built from it, *and* `SEND_MESSAGE` re-checks it in the reducer, so a hand-crafted
 dispatch can't create a forbidden thread. Threads are two-party only.
+
+## One doctor
+The clinic has a single practitioner. Booking skips department and doctor and starts at the calendar,
+check-in shows the attending doctor instead of a picker, and the reception board is one panel rather than
+one column per room. `state.doctors` is still an array and `doctorId` still travels on encounters, queue
+items and invoices, so adding a second doctor later is additive — but the UI assumes one and would need
+the pickers back.
 
 ## Formulary
 108 stocked items across ~81 generics. A generic may have several variants (strength + form): Paracetamol
@@ -78,12 +102,15 @@ tube, vial, amp, pc, respule, sachet) suggest a quantity of 1 instead of `autoQt
 - Keep `@media print` approach: anything printable must render through `PrintCenter` → `#print-root`.
 
 ## Known gaps / deliberately deferred
-1. **No auth / RBAC.** Role switcher is a demo control. Real build: Supabase Auth with roles (doctor, staff, patient) + RLS.
+1. **Auth is simulated, not secure.** Sign-in, forced password change and resets all work, but passwords
+   are plain text in localStorage and nothing is enforced server-side (see **Accounts**). Real build:
+   Supabase Auth with roles (doctor, staff, patient) + RLS. No session expiry, lockout or audit of
+   sign-ins either.
 2. **No backend.** Everything is localStorage. Suggested: Supabase Postgres tables mirroring the state slices
    (`patients, doctors, encounters, encounter_meds, queue, appointments, inventory, invoices, invoice_items`), Realtime for the queue.
 3. **Offline sync is simulated.** Replace the counter with a Dexie/IndexedDB outbox using `client_uuid` idempotency keys.
 4. **BIR compliance.** Receipt is a billing statement / acknowledgement — no BIR-registered OR series, no CAS/POS accreditation fields, no VAT breakdown. SC/PWD handled as flat 20% of subtotal (real rules: VAT-exempt + 20%; verify OSCA/PWD ID, log ID numbers).
-5. **Placeholders:** DOH LTO number, clinic seal, signatures (no e-signature capture), teleconsult links (`meet.mediclinic.ph` is fake), QR codes (`FakeQR` draws a deterministic pattern — swap for a real QR lib encoding a signed verification URL).
+5. **Placeholders:** DOH LTO number (now editable in Settings → Letterhead, still not a real licence), clinic seal, signatures (no e-signature capture), teleconsult links (`meet.mediclinic.ph` is fake), QR codes (`FakeQR` draws a deterministic pattern — swap for a real QR lib encoding a signed verification URL).
 6. **Payments.** GCash/Maya/Card record the method and a reference number only — no gateway.
 7. **Clinical safety.** Allergy check is keyword-based (`ALLERGY_RULES`), no drug–drug interaction database, ICD list is a short curated subset.
 8. **Data Privacy Act (R.A. 10173).** No consent capture, audit log, or access logging yet — required before real patient data.

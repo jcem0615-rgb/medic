@@ -1,10 +1,26 @@
 # MediClinic
 
-A Progressive Web App for a small Philippine outpatient clinic. One queue, three role portals —
-**Doctor**, **Patient**, **Staff/Receptionist** — switchable from the header.
+A Progressive Web App for a single-doctor Philippine outpatient clinic. One queue, three role portals —
+**Doctor**, **Patient**, **Staff/Receptionist** — reached by signing in with the matching account.
 
-Everything runs client-side on seeded demo data held in `localStorage`. There is no backend and no
-authentication yet, so **do not enter real patient information**.
+Everything runs client-side on seeded demo data held in `localStorage`. There is no backend, and the
+sign-in is a faithful *interface* for authentication rather than real security — passwords are stored in
+the browser in plain text. **Do not enter real patient information.**
+
+## Signing in
+
+Sign in with an **e-mail address or mobile number**. The default password for every seeded account is
+`123456`, and you will be asked to choose a new one before you can go any further.
+
+| Role | Sign in as |
+|---|---|
+| Doctor | `dr.santos@mediclinic.ph` |
+| Staff | `imelda.cruz@mediclinic.ph` |
+| Patient | `jm.reyes@email.ph` |
+
+The login screen lists these under *Show demo accounts*. Forgot a password? There is no self-service
+reset — the doctor or the front desk resets it from **Accounts**, which puts it back to `123456` and
+forces a change at the next sign-in.
 
 ## Quick start
 
@@ -23,8 +39,8 @@ npm run build && npm run preview   # http://localhost:4173
 
 | Portal | Screens |
 |---|---|
-| **Staff** | Now-serving board, check-in (existing or new patient, triage vitals, priority lane), queue status controller, patient directory, pharmacy stock, billing and payment collection, follow-up chase list, messages |
-| **Doctor** | Daily overview with KPIs and check-ins by hour, consultation workspace (vitals, SOAP with templates, 161-code ICD-10 picker, prescribing with allergy + stock checks, patient chart on hand), records search, messages |
+| **Staff** | Now-serving board (one panel for the clinic), check-in (existing or new patient, triage vitals, priority lane), queue status controller, patient directory, pharmacy stock, billing and payment collection, follow-up chase list, messages |
+| **Doctor** | Daily overview with KPIs and check-ins by hour, consultation workspace (vitals, SOAP with templates, 161-code ICD-10 picker, prescribing with allergy + stock checks, patient chart on hand), records search, messages, accounts, and settings for the signature block, prescription template and letterhead |
 | **Patient** | Live queue position, follow-up reminders, next appointment, teleconsult waiting room, appointment booking, prescriptions and visit history, messages to their doctors |
 
 ### The main flow
@@ -65,6 +81,10 @@ syncs across tabs through the `storage` event.
   pick a nebule and the route switches to Nebulization, pick a bottle and the quantity defaults to 1.
 - **Reminders** — as Staff, open *Follow-ups*: Teresita Gonzales is overdue, Rowena Castillo is due in
   two days. Send one and switch to that patient to see it marked.
+- **Prescription template** — as the Doctor, open *Settings*: edit your PRC number or switch off the
+  allergies box and watch the real document redraw beside you.
+- **Password reset** — as the Doctor or Staff, open *Accounts* and reset a patient. Sign in as them with
+  `123456` and the forced-change window appears.
 - **Printing** — prescriptions, medical certificates, medical abstracts and billing statements all print
   on the clinic letterhead. Use the print dialog to save as PDF.
 

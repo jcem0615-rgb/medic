@@ -17,7 +17,7 @@ import {
   Activity, AlertTriangle, ArrowLeft, ArrowRight, BadgeCheck, Banknote, Bell, BellRing, Boxes,
   Calendar, CalendarClock, CalendarPlus, CheckCircle2, ChevronDown, ChevronRight, ClipboardList,
   Clock, CloudOff, CreditCard, Download, FileText, FlaskConical, Heart, Home, Hospital, Info,
-  LayoutGrid, LogIn, Mail, MapPin, MessageSquare, Minus, Monitor, Package, PackagePlus,
+  LayoutGrid, LogIn, LogOut, Mail, MapPin, MessageSquare, Minus, Monitor, Package, PackagePlus,
   PhilippinePeso, Phone, Pill, Plus, Printer, QrCode, RefreshCw, Search, Send, Settings2, Share2,
   ShieldCheck, Smartphone, Stethoscope, Syringe, Thermometer, Trash2, TrendingUp, User, UserPlus,
   Users, Video, Wallet, Wifi, WifiOff, X, Zap,
@@ -27,7 +27,7 @@ import {
 
 const STORE_KEY = 'mediclinic:v1';
 /* Bump whenever the state shape changes — older persisted state is discarded. */
-const SCHEMA_VERSION = 5;
+const SCHEMA_VERSION = 6;
 
 const CLINIC = {
   name: 'MediClinic Family Health Center',
@@ -89,6 +89,27 @@ const DEPARTMENTS = [
   { id: 'pedia', label: 'Pediatrics' },
   { id: 'obgyn', label: 'OB-GYN' },
 ];
+
+/* --- Accounts ------------------------------------------------------------------
+   Everyone signs in with their e-mail address or mobile number. New accounts (and
+   any the clinic resets) carry this password and must change it on first sign-in.
+   Credentials are held in localStorage in plain text — a stand-in for real auth
+   (CLAUDE.md gap 1), never something to point at real patient data. */
+const DEFAULT_PASSWORD = '123456';
+const SESSION_KEY = 'mediclinic:session';
+const MIN_PASSWORD_LENGTH = 6;
+
+/* Phone numbers are typed every which way, so compare them digits-only. */
+const normalizeIdentifier = (value = '') => {
+  const v = String(value).trim().toLowerCase();
+  return v.includes('@') ? v : v.replace(/[^0-9]/g, '');
+};
+
+const matchesIdentifier = (user, identifier) => {
+  const id = normalizeIdentifier(identifier);
+  if (!id) return false;
+  return normalizeIdentifier(user.email) === id || normalizeIdentifier(user.mobile) === id;
+};
 
 /* --- Messaging policy ----------------------------------------------------------
    Who may open a thread with whom. Patients and front-desk staff deliberately have
@@ -623,30 +644,14 @@ const TIME_SLOTS = [
 
 /* Today's queue is anchored to *now* with ago(mins) so the demo always looks live. */
 function buildSeed() {
+  /* Single-doctor clinic. Everything that used to fan out across rooms now points
+     at this one practitioner; the signature block is editable from Settings. */
   const doctors = [
     {
       id: 'D-0001', name: 'Maria Elena Santos', title: 'MD', dept: 'family',
       specialty: 'Family Medicine', prc: '0098221', ptr: '2411056', s2: '00-12-3456',
-      room: 'Room 1', fee: 500, days: 'Mon · Wed · Fri', hours: '9:00 AM – 12:00 NN',
-      color: 'teal',
-    },
-    {
-      id: 'D-0002', name: 'Noel R. Aguilar', title: 'MD, FPCP',
-      dept: 'internal', specialty: 'Internal Medicine', prc: '0102774', ptr: '2411072',
-      s2: '00-12-7781', room: 'Room 2', fee: 600, days: 'Mon – Sat', hours: '8:00 AM – 1:00 PM',
-      color: 'sky',
-    },
-    {
-      id: 'D-0003', name: 'Grace P. Villanueva', title: 'MD, FPPS',
-      dept: 'pedia', specialty: 'Pediatrics', prc: '0114532', ptr: '2411088', s2: '00-13-2290',
-      room: 'Room 3', fee: 550, days: 'Tue · Thu · Sat', hours: '1:00 PM – 5:00 PM',
-      color: 'indigo',
-    },
-    {
-      id: 'D-0004', name: 'Ramon C. Dela Cruz', title: 'MD, FPOGS',
-      dept: 'obgyn', specialty: 'Obstetrics & Gynecology', prc: '0087910', ptr: '2411090',
-      s2: '00-11-4418', room: 'Room 4', fee: 700, days: 'Wed · Fri', hours: '2:00 PM – 5:00 PM',
-      color: 'rose',
+      room: 'Consultation Room', fee: 500, days: 'Mon – Sat', hours: '9:00 AM – 5:00 PM',
+      email: 'dr.santos@mediclinic.ph', mobile: '0917 100 2001', color: 'teal',
     },
   ];
 
@@ -873,7 +878,7 @@ function buildSeed() {
 
   const encounters = [
     {
-      id: 'E-0001', patientId: 'P-0003', doctorId: 'D-0002', date: inDays(-124), type: 'Appointment',
+      id: 'E-0001', patientId: 'P-0003', doctorId: 'D-0001', date: inDays(-124), type: 'Appointment',
       chiefComplaint: 'Diabetes and hypertension follow-up',
       vitals: { bp: '138/86', hr: 78, rr: 18, temp: 36.6, spo2: 98, weight: 76, height: 168 },
       soap: {
@@ -915,7 +920,7 @@ function buildSeed() {
       disposition: 'Home / outpatient', followUp: '',
     },
     {
-      id: 'E-0004', patientId: 'P-0004', doctorId: 'D-0003', date: inDays(-58), type: 'Appointment',
+      id: 'E-0004', patientId: 'P-0004', doctorId: 'D-0001', date: inDays(-58), type: 'Appointment',
       chiefComplaint: 'Fever and cough x 2 days',
       vitals: { bp: '', hr: 112, rr: 26, temp: 38.4, spo2: 98, weight: 18, height: 106 },
       soap: {
@@ -929,7 +934,7 @@ function buildSeed() {
       disposition: 'Home / outpatient', followUp: '',
     },
     {
-      id: 'E-0005', patientId: 'P-0008', doctorId: 'D-0002', date: inDays(-45), type: 'Appointment',
+      id: 'E-0005', patientId: 'P-0008', doctorId: 'D-0001', date: inDays(-45), type: 'Appointment',
       chiefComplaint: 'Knee pain and BP follow-up',
       vitals: { bp: '144/88', hr: 76, rr: 18, temp: 36.5, spo2: 97, weight: 64, height: 152 },
       soap: {
@@ -971,7 +976,7 @@ function buildSeed() {
       disposition: 'Home / outpatient', followUp: '',
     },
     {
-      id: 'E-0008', patientId: 'P-0006', doctorId: 'D-0002', date: inDays(-27), type: 'Appointment',
+      id: 'E-0008', patientId: 'P-0006', doctorId: 'D-0001', date: inDays(-27), type: 'Appointment',
       chiefComplaint: 'Lipid profile review',
       vitals: { bp: '128/82', hr: 74, rr: 18, temp: 36.6, spo2: 98, weight: 88, height: 174 },
       soap: {
@@ -1041,7 +1046,7 @@ function buildSeed() {
       disposition: 'Home / outpatient', followUp: '',
     },
     {
-      id: 'E-0013', patientId: 'P-0004', doctorId: 'D-0003', date: inDays(-3), type: 'Appointment',
+      id: 'E-0013', patientId: 'P-0004', doctorId: 'D-0001', date: inDays(-3), type: 'Appointment',
       chiefComplaint: 'Well-child check-up',
       vitals: { bp: '', hr: 98, rr: 22, temp: 36.7, spo2: 99, weight: 19, height: 108 },
       soap: {
@@ -1055,7 +1060,7 @@ function buildSeed() {
       disposition: 'Home / outpatient', followUp: inDays(87),
     },
     {
-      id: 'E-0014', patientId: 'P-0003', doctorId: 'D-0002', date: ymd(), type: 'Walk-in',
+      id: 'E-0014', patientId: 'P-0003', doctorId: 'D-0001', date: ymd(), type: 'Walk-in',
       chiefComplaint: 'Epigastric pain and acid reflux',
       vitals: { bp: '136/84', hr: 80, rr: 18, temp: 36.6, spo2: 98, weight: 75, height: 168 },
       soap: {
@@ -1135,7 +1140,7 @@ function buildSeed() {
   /* Today's board. Minutes-ago anchoring keeps the demo live whenever it is opened. */
   const queue = [
     {
-      id: 'Q-0001', number: 1, patientId: 'P-0003', doctorId: 'D-0002', type: 'Walk-in',
+      id: 'Q-0001', number: 1, patientId: 'P-0003', doctorId: 'D-0001', type: 'Walk-in',
       reason: 'Epigastric pain and acid reflux', priority: true, status: 'Completed',
       checkedInAt: ago(96), startedAt: ago(74), completedAt: ago(52),
       vitals: { bp: '136/84', hr: 80, rr: 18, temp: 36.6, spo2: 98, weight: 75, height: 168 },
@@ -1156,14 +1161,14 @@ function buildSeed() {
       encounterId: '', invoiceId: '', draft: null,
     },
     {
-      id: 'Q-0004', number: 4, patientId: 'P-0008', doctorId: 'D-0002', type: 'Walk-in',
+      id: 'Q-0004', number: 4, patientId: 'P-0008', doctorId: 'D-0001', type: 'Walk-in',
       reason: 'BP check and knee pain', priority: true, status: 'Waiting',
       checkedInAt: ago(36), startedAt: '', completedAt: '',
       vitals: { bp: '148/90', hr: 74, rr: 18, temp: 36.4, spo2: 97, weight: 64, height: 152 },
       encounterId: '', invoiceId: '', draft: null,
     },
     {
-      id: 'Q-0005', number: 5, patientId: 'P-0004', doctorId: 'D-0003', type: 'Appointment',
+      id: 'Q-0005', number: 5, patientId: 'P-0004', doctorId: 'D-0001', type: 'Appointment',
       reason: 'Fever since last night', priority: false, status: 'Waiting',
       checkedInAt: ago(24), startedAt: '', completedAt: '',
       vitals: { bp: '', hr: 118, rr: 26, temp: 38.6, spo2: 98, weight: 19, height: 108 },
@@ -1192,12 +1197,12 @@ function buildSeed() {
       status: 'Checked In', createdAt: ago(60 * 24 * 6), link: '',
     },
     {
-      id: 'A-0002', patientId: 'P-0004', doctorId: 'D-0003', dept: 'pedia', date: ymd(),
+      id: 'A-0002', patientId: 'P-0004', doctorId: 'D-0001', dept: 'pedia', date: ymd(),
       time: '01:30 PM', mode: 'In-clinic', complaint: 'Fever since last night',
       status: 'Checked In', createdAt: ago(60 * 20), link: '',
     },
     {
-      id: 'A-0003', patientId: 'P-0006', doctorId: 'D-0002', dept: 'internal', date: ymd(),
+      id: 'A-0003', patientId: 'P-0006', doctorId: 'D-0001', dept: 'internal', date: ymd(),
       time: '03:30 PM', mode: 'In-clinic', complaint: 'Repeat lipid profile review',
       status: 'Confirmed', createdAt: ago(60 * 24 * 3), link: '',
     },
@@ -1207,7 +1212,7 @@ function buildSeed() {
       status: 'Confirmed', createdAt: ago(60 * 24), link: 'https://meet.mediclinic.ph/room/a-0004',
     },
     {
-      id: 'A-0005', patientId: 'P-0003', doctorId: 'D-0002', dept: 'internal', date: inDays(14),
+      id: 'A-0005', patientId: 'P-0003', doctorId: 'D-0001', dept: 'internal', date: inDays(14),
       time: '08:30 AM', mode: 'In-clinic', complaint: 'Gastritis follow-up and repeat FBS',
       status: 'Confirmed', createdAt: ago(30), link: '',
     },
@@ -1215,9 +1220,9 @@ function buildSeed() {
 
   /* Front-desk team. Staff sign in as one of these from the header. */
   const staff = [
-    { id: 'S-0001', name: 'Imelda Cruz', role: 'Receptionist', desk: 'Front desk' },
-    { id: 'S-0002', name: 'Benjie Ramos', role: 'Pharmacy assistant', desk: 'Pharmacy' },
-    { id: 'S-0003', name: 'Cherry Lim', role: 'Billing clerk', desk: 'Billing' },
+    { id: 'S-0001', name: 'Imelda Cruz', role: 'Receptionist', desk: 'Front desk', email: 'imelda.cruz@mediclinic.ph', mobile: '0917 100 3001' },
+    { id: 'S-0002', name: 'Benjie Ramos', role: 'Pharmacy assistant', desk: 'Pharmacy', email: 'benjie.ramos@mediclinic.ph', mobile: '0917 100 3002' },
+    { id: 'S-0003', name: 'Cherry Lim', role: 'Billing clerk', desk: 'Billing', email: 'cherry.lim@mediclinic.ph', mobile: '0917 100 3003' },
   ];
 
   const msg = (from, body, minsAgo, read = true) => ({
@@ -1256,7 +1261,7 @@ function buildSeed() {
     },
     {
       id: 'T-0003',
-      participants: [{ kind: 'doctor', id: 'D-0002' }, { kind: 'patient', id: 'P-0003' }],
+      participants: [{ kind: 'doctor', id: 'D-0001' }, { kind: 'patient', id: 'P-0003' }],
       subject: 'Omeprazole and my maintenance',
       createdAt: ago(60 * 5),
       updatedAt: ago(60 * 5),
@@ -1266,13 +1271,13 @@ function buildSeed() {
     },
     {
       id: 'T-0004',
-      participants: [{ kind: 'doctor', id: 'D-0003' }, { kind: 'staff', id: 'S-0001' }],
+      participants: [{ kind: 'doctor', id: 'D-0001' }, { kind: 'staff', id: 'S-0001' }],
       subject: 'Afternoon pediatric slots',
       createdAt: ago(60 * 20),
       updatedAt: ago(60 * 19),
       messages: [
-        msg({ kind: 'staff', id: 'S-0001' }, 'Doc Grace, two parents are asking for 4:30 PM slots on Thursday. Can I open them?', 60 * 20),
-        msg({ kind: 'doctor', id: 'D-0003' }, 'Yes, go ahead. Just keep the last slot free for walk-in febrile kids.', 60 * 19),
+        msg({ kind: 'staff', id: 'S-0001' }, 'Doc, two parents are asking for 4:30 PM slots on Thursday. Can I open them?', 60 * 20),
+        msg({ kind: 'doctor', id: 'D-0001' }, 'Yes, go ahead. Just keep the last slot free for walk-in febrile kids.', 60 * 19),
       ],
     },
   ];
@@ -1285,7 +1290,7 @@ function buildSeed() {
       to: { kind: 'patient', id: 'P-0003' },
       kind: 'follow-up',
       title: 'Gastritis follow-up',
-      body: 'Follow-up with Dr. Aguilar in 2 weeks, and repeat your FBS before the visit.',
+      body: 'Follow-up with Dr. Santos in 2 weeks, and repeat your FBS before the visit.',
       dueDate: inDays(14),
       encounterId: 'E-0014',
       createdAt: ago(50),
@@ -1310,7 +1315,7 @@ function buildSeed() {
       to: { kind: 'patient', id: 'P-0006' },
       kind: 'follow-up',
       title: 'Repeat lipid profile',
-      body: 'Three-month lifestyle review with Dr. Aguilar — repeat your lipid profile first.',
+      body: 'Three-month lifestyle review with Dr. Santos — repeat your lipid profile first.',
       dueDate: inDays(63),
       encounterId: 'E-0008',
       createdAt: ago(60 * 24 * 27),
@@ -1334,7 +1339,7 @@ function buildSeed() {
       to: { kind: 'patient', id: 'P-0008' },
       kind: 'follow-up',
       title: 'BP and knee pain follow-up',
-      body: 'One-month review with Dr. Aguilar — bring your BP diary.',
+      body: 'One-month review with Dr. Santos — bring your BP diary.',
       dueDate: inDays(-3),
       encounterId: 'E-0005',
       createdAt: ago(60 * 24 * 33),
@@ -1356,6 +1361,36 @@ function buildSeed() {
     },
   ];
 
+  /* One account per person in the directories. */
+  const users = [
+    ...doctors.map((d) => ({ kind: 'doctor', refId: d.id, name: `Dr. ${d.name}`, email: d.email, mobile: d.mobile })),
+    ...staff.map((s) => ({ kind: 'staff', refId: s.id, name: s.name, email: s.email, mobile: s.mobile })),
+    ...patients.map((p) => ({ kind: 'patient', refId: p.id, name: patientName(p), email: p.email, mobile: p.mobile })),
+  ].map((u, i) => ({
+    ...u,
+    id: `U-${String(i + 1).padStart(4, '0')}`,
+    password: DEFAULT_PASSWORD,
+    mustChangePassword: true,
+    lastLoginAt: '',
+    passwordResetAt: '',
+  }));
+
+  /* The letterhead every printed document shares, editable from Settings. */
+  const clinic = { ...CLINIC };
+
+  /* Prescription layout. The doctor owns this — see RxTemplateEditor. */
+  const rxTemplate = {
+    heading: 'Prescription',
+    showWeight: true,
+    showAllergies: true,
+    showLicenses: true,
+    showStandingInstructions: false,
+    signatureLabel: 'Attending Physician',
+    standingInstructions: 'Return immediately for difficulty of breathing, persistent vomiting, or worsening symptoms.',
+    footerNote:
+      'Generic names are written in compliance with R.A. 6675 (Generics Act of 1988). This prescription is valid for one (1) year from the date issued, except for regulated drugs.',
+  };
+
   return {
     schemaVersion: SCHEMA_VERSION,
     seededAt: new Date().toISOString(),
@@ -1369,6 +1404,9 @@ function buildSeed() {
     staff,
     threads,
     notifications,
+    users,
+    clinic,
+    rxTemplate,
   };
 }
 
@@ -1384,6 +1422,54 @@ function reducer(state, action) {
 
     case 'RESET':
       return action.state;
+
+    /* --- accounts ----------------------------------------------------------- */
+    case 'SET_PASSWORD':
+      return {
+        ...state,
+        users: state.users.map((u) =>
+          u.id === action.id
+            ? { ...u, password: action.password, mustChangePassword: false, passwordResetAt: '' }
+            : u,
+        ),
+      };
+
+    /* A reset puts the account back on the default and forces a change at the
+       next sign-in. Only the doctor and staff can do this. */
+    case 'RESET_PASSWORD':
+      return {
+        ...state,
+        users: state.users.map((u) =>
+          u.id === action.id
+            ? {
+                ...u,
+                password: DEFAULT_PASSWORD,
+                mustChangePassword: true,
+                passwordResetAt: action.at,
+                resetBy: action.by ?? '',
+              }
+            : u,
+        ),
+      };
+
+    case 'TOUCH_LOGIN':
+      return {
+        ...state,
+        users: state.users.map((u) => (u.id === action.id ? { ...u, lastLoginAt: action.at } : u)),
+      };
+
+    /* --- clinic letterhead & prescription template --------------------------- */
+    case 'UPDATE_CLINIC':
+      return { ...state, clinic: { ...state.clinic, ...action.patch } };
+
+    case 'UPDATE_RX_TEMPLATE':
+      return { ...state, rxTemplate: { ...state.rxTemplate, ...action.patch } };
+
+    case 'UPDATE_DOCTOR':
+      return {
+        ...state,
+        doctors: state.doctors.map((d) => (d.id === action.id ? { ...d, ...action.patch } : d)),
+      };
 
     case 'ADD_PATIENT':
       return { ...state, patients: [...state.patients, action.patient] };
@@ -1941,9 +2027,31 @@ function Toasts({ items, onDismiss }) {
   );
 }
 
-function Header({ role, setRole }) {
-  const { state, patientId, setPatientId, doctorId, setDoctorId, staffId, setStaffId } = useClinic();
-  const theme = ROLE_THEME[role];
+function Header() {
+  const { state, role, currentUser, signOut, doctorId } = useClinic();
+  const theme = ROLE_THEME[role] ?? ROLE_THEME.staff;
+  const [menuOpen, setMenuOpen] = useState(false);
+  const ref = useRef(null);
+
+  useEffect(() => {
+    if (!menuOpen) return undefined;
+    const onDown = (e) => { if (ref.current && !ref.current.contains(e.target)) setMenuOpen(false); };
+    const onKey = (e) => e.key === 'Escape' && setMenuOpen(false);
+    document.addEventListener('mousedown', onDown);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onDown);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [menuOpen]);
+
+  const roleLabel = ROLES.find((r) => r.id === role)?.label ?? '';
+  const subtitle =
+    role === 'doctor'
+      ? findBy(state.doctors, doctorId)?.specialty ?? roleLabel
+      : role === 'staff'
+        ? findBy(state.staff, currentUser.refId)?.role ?? roleLabel
+        : roleLabel;
 
   return (
     <header className="no-print sticky top-0 z-30 border-b border-slate-200 bg-white/90 backdrop-blur">
@@ -1954,80 +2062,57 @@ function Header({ role, setRole }) {
           </span>
           <div className="min-w-0 leading-tight">
             <div className="truncate text-sm font-bold text-slate-900">MediClinic</div>
-            <div className="hidden truncate text-[11px] text-slate-500 sm:block">{CLINIC.hours}</div>
+            <div className="hidden truncate text-[11px] text-slate-500 sm:block">{state.clinic?.hours ?? CLINIC.hours}</div>
           </div>
         </div>
 
-        {/* Demo control only — a real build gates portals behind auth roles. */}
-        <nav aria-label="Portal" className="ml-auto flex rounded-lg bg-slate-100 p-0.5">
-          {ROLES.map((r) => {
-            const Icon = r.icon;
-            const active = r.id === role;
-            return (
-              <button
-                key={r.id}
-                type="button"
-                onClick={() => setRole(r.id)}
-                aria-current={active ? 'page' : undefined}
-                className={cx(
-                  'inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-semibold transition sm:px-3',
-                  active ? cx('bg-white shadow-sm', ROLE_THEME[r.id].text) : 'text-slate-500 hover:text-slate-800',
-                )}
+        <div className="ml-auto flex items-center gap-2">
+          <LiveClock />
+          <NotificationBell />
+          <PwaStatus />
+
+          {/* Who is signed in, and the way out. */}
+          <div className="relative" ref={ref}>
+            <button
+              type="button"
+              onClick={() => setMenuOpen((v) => !v)}
+              className="flex items-center gap-2 rounded-lg py-1 pl-1 pr-1.5 transition hover:bg-slate-100"
+              aria-haspopup="menu"
+              aria-expanded={menuOpen}
+            >
+              <Avatar name={currentUser.name} tone={PARTY_TONE[role]} size="h-8 w-8 text-[10px]" />
+              <span className="hidden min-w-0 text-left leading-tight md:block">
+                <span className="block max-w-[11rem] truncate text-xs font-semibold text-slate-800">
+                  {currentUser.name}
+                </span>
+                <span className="block truncate text-[10px] text-slate-500">{subtitle}</span>
+              </span>
+              <ChevronDown className="h-3.5 w-3.5 shrink-0 text-slate-400" />
+            </button>
+
+            {menuOpen && (
+              <div
+                role="menu"
+                className="absolute right-0 z-40 mt-2 w-60 animate-pop-in overflow-hidden rounded-xl border border-slate-200 bg-white shadow-xl"
               >
-                <Icon className="h-3.5 w-3.5" />
-                <span className="hidden sm:inline">{r.label}</span>
-              </button>
-            );
-          })}
-        </nav>
-
-        {/* Who you are signed in as, per portal. Another demo-only control. */}
-        {role === 'doctor' && (
-          <select
-            className="input hidden !w-auto !py-1.5 text-xs md:block"
-            value={doctorId}
-            onChange={(e) => setDoctorId(e.target.value)}
-            aria-label="Signed in as doctor"
-          >
-            {state.doctors.map((d) => (
-              <option key={d.id} value={d.id}>
-                Dr. {d.name.split(' ').slice(-1)} · {d.specialty}
-              </option>
-            ))}
-          </select>
-        )}
-        {role === 'patient' && (
-          <select
-            className="input hidden !w-auto !py-1.5 text-xs md:block"
-            value={patientId}
-            onChange={(e) => setPatientId(e.target.value)}
-            aria-label="Signed in as patient"
-          >
-            {state.patients.map((p) => (
-              <option key={p.id} value={p.id}>
-                {patientName(p)}
-              </option>
-            ))}
-          </select>
-        )}
-        {role === 'staff' && (
-          <select
-            className="input hidden !w-auto !py-1.5 text-xs md:block"
-            value={staffId}
-            onChange={(e) => setStaffId(e.target.value)}
-            aria-label="Signed in as staff"
-          >
-            {state.staff.map((s) => (
-              <option key={s.id} value={s.id}>
-                {s.name} · {s.role}
-              </option>
-            ))}
-          </select>
-        )}
-
-        <LiveClock />
-        <NotificationBell />
-        <PwaStatus />
+                <div className="border-b border-slate-100 px-3 py-2.5">
+                  <p className="truncate text-sm font-semibold text-slate-900">{currentUser.name}</p>
+                  <p className="truncate text-[11px] text-slate-500">{currentUser.email}</p>
+                  <p className="nums truncate text-[11px] text-slate-500">{currentUser.mobile}</p>
+                  <Badge tone={PARTY_TONE[role]} className="mt-1.5">{roleLabel}</Badge>
+                </div>
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => { setMenuOpen(false); signOut(); }}
+                  className="flex w-full items-center gap-2 px-3 py-2.5 text-left text-sm font-medium text-slate-700 transition hover:bg-slate-50"
+                >
+                  <LogOut className="h-4 w-4 text-slate-400" /> Sign out
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
       </div>
     </header>
   );
@@ -2067,6 +2152,473 @@ function SubNav({ tabs, active, onChange, role }) {
           })}
         </nav>
       </div>
+    </div>
+  );
+}
+
+
+/* ===== 4b. Authentication ======================================================= */
+
+/* The signed-in user id lives outside the store: localStorage when "remember me"
+   is ticked (survives a browser restart), sessionStorage otherwise (dies with the
+   tab). Either way the store itself never holds the session. */
+function readSession() {
+  try {
+    const raw = localStorage.getItem(SESSION_KEY) ?? sessionStorage.getItem(SESSION_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    return parsed?.userId ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeSession(session, remember) {
+  try {
+    const raw = JSON.stringify(session);
+    if (remember) {
+      localStorage.setItem(SESSION_KEY, raw);
+      sessionStorage.removeItem(SESSION_KEY);
+    } else {
+      sessionStorage.setItem(SESSION_KEY, raw);
+      localStorage.removeItem(SESSION_KEY);
+    }
+  } catch {
+    /* private mode — the session just won't survive a reload */
+  }
+}
+
+function clearSession() {
+  try {
+    localStorage.removeItem(SESSION_KEY);
+    sessionStorage.removeItem(SESSION_KEY);
+  } catch {
+    /* nothing to clear */
+  }
+}
+
+function useSession() {
+  const [session, setSession] = useState(readSession);
+
+  const signIn = useCallback((userId, remember) => {
+    const next = { userId, remember: !!remember, at: new Date().toISOString() };
+    writeSession(next, remember);
+    setSession(next);
+  }, []);
+
+  const signOut = useCallback(() => {
+    clearSession();
+    setSession(null);
+  }, []);
+
+  return { session, signIn, signOut };
+}
+
+/* Sign-in by e-mail address or mobile number. */
+function LoginScreen({ users, onSignIn, lastResetNote }) {
+  const { state } = useClinic();
+  const clinic = state?.clinic ?? CLINIC;
+  const [identifier, setIdentifier] = useState('');
+  const [password, setPassword] = useState('');
+  const [remember, setRemember] = useState(true);
+  const [error, setError] = useState('');
+  const [forgotOpen, setForgotOpen] = useState(false);
+  const [showDemo, setShowDemo] = useState(false);
+
+  const submit = (e) => {
+    e?.preventDefault();
+    const user = users.find((u) => matchesIdentifier(u, identifier));
+    if (!user || user.password !== password) {
+      /* Don't say which half was wrong. */
+      setError('We could not match that e-mail or mobile number and password.');
+      return;
+    }
+    setError('');
+    onSignIn(user, remember);
+  };
+
+  const demoAccounts = [
+    { label: 'Doctor', user: users.find((u) => u.kind === 'doctor') },
+    { label: 'Staff', user: users.find((u) => u.kind === 'staff') },
+    { label: 'Patient', user: users.find((u) => u.kind === 'patient') },
+  ].filter((r) => r.user);
+
+  return (
+    <div className="flex min-h-screen flex-col bg-slate-100">
+      <div className="flex flex-1 items-center justify-center p-4">
+        <div className="w-full max-w-sm">
+          <div className="mb-5 flex flex-col items-center text-center">
+            <span className="mb-3 grid h-14 w-14 place-items-center rounded-2xl bg-teal-600 text-white shadow-sm">
+              <Plus className="h-8 w-8" strokeWidth={3} />
+            </span>
+            <h1 className="text-xl font-bold text-slate-900">{clinic.name}</h1>
+            <p className="text-xs text-slate-500">{clinic.tagline}</p>
+          </div>
+
+          <form onSubmit={submit} className="card card-pad space-y-3">
+            <h2 className="text-sm font-bold text-slate-900">Sign in</h2>
+
+            {lastResetNote && (
+              <p className="flex items-start gap-2 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-900">
+                <Info className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                {lastResetNote}
+              </p>
+            )}
+
+            <Field label="E-mail or mobile number" required>
+              <input
+                className="input"
+                autoFocus
+                autoComplete="username"
+                inputMode="email"
+                placeholder="you@email.ph or 0917 000 0000"
+                value={identifier}
+                onChange={(e) => { setIdentifier(e.target.value); setError(''); }}
+              />
+            </Field>
+
+            <Field label="Password" required>
+              <input
+                type="password"
+                className="input"
+                autoComplete="current-password"
+                placeholder="••••••"
+                value={password}
+                onChange={(e) => { setPassword(e.target.value); setError(''); }}
+              />
+            </Field>
+
+            {error && (
+              <p role="alert" className="flex items-start gap-2 rounded-lg bg-rose-50 px-3 py-2 text-xs font-medium text-rose-800">
+                <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                {error}
+              </p>
+            )}
+
+            <div className="flex items-center justify-between gap-2">
+              <label className="flex cursor-pointer items-center gap-2 text-xs font-medium text-slate-700">
+                <input
+                  type="checkbox"
+                  className="h-4 w-4 accent-teal-600"
+                  checked={remember}
+                  onChange={(e) => setRemember(e.target.checked)}
+                />
+                Remember me
+              </label>
+              <button
+                type="button"
+                className="text-xs font-semibold text-teal-700 hover:underline"
+                onClick={() => setForgotOpen(true)}
+              >
+                Forgot password?
+              </button>
+            </div>
+
+            <button type="submit" className="btn-primary w-full py-2.5">
+              <LogIn className="h-4 w-4" /> Sign in
+            </button>
+
+            <p className="text-center text-[11px] leading-snug text-slate-400">
+              Demo build — accounts are stored in this browser only and are not secured.
+              Do not use real patient details.
+            </p>
+          </form>
+
+          {/* Demo convenience: the role switcher is gone, so show the way in. */}
+          <div className="mt-3 text-center">
+            <button
+              type="button"
+              className="text-xs font-semibold text-slate-500 hover:text-slate-800"
+              onClick={() => setShowDemo((v) => !v)}
+            >
+              {showDemo ? 'Hide' : 'Show'} demo accounts
+            </button>
+            {showDemo && (
+              <ul className="mt-2 space-y-1.5 rounded-xl border border-slate-200 bg-white p-3 text-left">
+                {demoAccounts.map((row) => (
+                  <li key={row.label} className="flex items-center gap-2">
+                    <Badge tone={PARTY_TONE[row.user.kind]}>{row.label}</Badge>
+                    <button
+                      type="button"
+                      className="min-w-0 flex-1 truncate text-left text-xs text-slate-600 hover:text-slate-900"
+                      onClick={() => {
+                        setIdentifier(row.user.email);
+                        setPassword(row.user.password === DEFAULT_PASSWORD ? DEFAULT_PASSWORD : '');
+                        setError('');
+                      }}
+                    >
+                      {row.user.email}
+                    </button>
+                  </li>
+                ))}
+                <li className="border-t border-slate-100 pt-1.5 text-[11px] text-slate-500">
+                  Default password <span className="nums font-bold text-slate-700">{DEFAULT_PASSWORD}</span> — you
+                  will be asked to change it on first sign-in.
+                </li>
+              </ul>
+            )}
+          </div>
+        </div>
+      </div>
+
+      <Modal
+        open={forgotOpen}
+        onClose={() => setForgotOpen(false)}
+        title="Forgot your password?"
+        subtitle="The clinic resets it for you"
+        size="sm"
+        footer={
+          <div className="flex justify-end">
+            <button type="button" className="btn-primary btn-sm" onClick={() => setForgotOpen(false)}>
+              Got it
+            </button>
+          </div>
+        }
+      >
+        <div className="space-y-3 p-5 text-sm text-slate-700">
+          <p>
+            There is no self-service reset. Ask the front desk — or your doctor — to reset your
+            account from their portal.
+          </p>
+          <p className="rounded-lg bg-slate-50 px-3 py-2 text-xs">
+            They will set it back to the default password{' '}
+            <span className="nums font-bold text-slate-900">{DEFAULT_PASSWORD}</span>. The next time you
+            sign in you will be asked to choose a new one before you can go any further.
+          </p>
+          <p className="text-xs text-slate-500">
+            Front desk · {clinic.phone} · {clinic.email}
+          </p>
+        </div>
+      </Modal>
+    </div>
+  );
+}
+
+/* Shown over everything until a first-sign-in or reset password is replaced.
+   There is no dismiss and no escape — that is the point of it. */
+function ForcePasswordChange({ user, onChange, onSignOut, wasReset }) {
+  const [next, setNext] = useState('');
+  const [confirm, setConfirm] = useState('');
+  const [error, setError] = useState('');
+
+  const submit = (e) => {
+    e?.preventDefault();
+    if (next.length < MIN_PASSWORD_LENGTH) {
+      setError(`Use at least ${MIN_PASSWORD_LENGTH} characters.`);
+      return;
+    }
+    if (next === DEFAULT_PASSWORD) {
+      setError('Choose something other than the default password.');
+      return;
+    }
+    if (next !== confirm) {
+      setError('The two passwords do not match.');
+      return;
+    }
+    onChange(next);
+  };
+
+  return (
+    <div className="no-print fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4 backdrop-blur-sm">
+      <form onSubmit={submit} className="w-full max-w-sm animate-pop-in rounded-2xl bg-white p-5 shadow-2xl">
+        <div className="mb-3 flex items-start gap-3">
+          <span className="grid h-10 w-10 shrink-0 place-items-center rounded-lg bg-amber-100 text-amber-700">
+            <ShieldCheck className="h-5 w-5" />
+          </span>
+          <div>
+            <h2 className="text-base font-bold text-slate-900">Choose a new password</h2>
+            <p className="text-xs text-slate-500">
+              {wasReset
+                ? 'Your password was reset by the clinic. Set your own before continuing.'
+                : 'You are signing in with the default password. Set your own before continuing.'}
+            </p>
+          </div>
+        </div>
+
+        <div className="space-y-3">
+          <Field label="New password" required hint={`At least ${MIN_PASSWORD_LENGTH} characters, and not ${DEFAULT_PASSWORD}.`}>
+            <input
+              type="password"
+              className="input"
+              autoFocus
+              autoComplete="new-password"
+              value={next}
+              onChange={(e) => { setNext(e.target.value); setError(''); }}
+            />
+          </Field>
+          <Field label="Confirm new password" required>
+            <input
+              type="password"
+              className="input"
+              autoComplete="new-password"
+              value={confirm}
+              onChange={(e) => { setConfirm(e.target.value); setError(''); }}
+            />
+          </Field>
+
+          {error && (
+            <p role="alert" className="flex items-start gap-2 rounded-lg bg-rose-50 px-3 py-2 text-xs font-medium text-rose-800">
+              <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+              {error}
+            </p>
+          )}
+
+          <button type="submit" className="btn-primary w-full py-2.5">
+            <CheckCircle2 className="h-4 w-4" /> Save and continue
+          </button>
+          <button type="button" onClick={onSignOut} className="btn-ghost btn-sm w-full">
+            Sign out instead
+          </button>
+        </div>
+
+        <p className="mt-3 text-center text-[11px] text-slate-400">
+          Signed in as {user?.name} · {user?.email}
+        </p>
+      </form>
+    </div>
+  );
+}
+
+/* Account list with the reset action. Doctor and staff both get this. */
+function AccountsPanel({ accent = 'teal' }) {
+  const { state, act, toast, me } = useClinic();
+  const [query, setQuery] = useState('');
+  const [confirming, setConfirming] = useState(null);
+
+  const q = query.trim().toLowerCase();
+  const users = useMemo(() => {
+    const list = state.users.slice().sort((a, b) => {
+      const order = { doctor: 0, staff: 1, patient: 2 };
+      return order[a.kind] - order[b.kind] || a.name.localeCompare(b.name);
+    });
+    if (!q) return list;
+    return list.filter(
+      (u) =>
+        u.name.toLowerCase().includes(q) ||
+        (u.email ?? '').toLowerCase().includes(q) ||
+        normalizeIdentifier(u.mobile).includes(normalizeIdentifier(q)),
+    );
+  }, [state.users, q]);
+
+  const pending = state.users.filter((u) => u.mustChangePassword).length;
+
+  const reset = (user) => {
+    act({ type: 'RESET_PASSWORD', id: user.id, at: new Date().toISOString(), by: partyKey(me) });
+    toast(`${user.name}'s password is back to ${DEFAULT_PASSWORD} — they must change it at next sign-in.`, 'success');
+    setConfirming(null);
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <h1 className="text-xl font-bold text-slate-900">Accounts</h1>
+          <p className="text-sm text-slate-500">
+            Reset a password when someone is locked out. It goes back to{' '}
+            <span className="nums font-semibold text-slate-700">{DEFAULT_PASSWORD}</span> and they must
+            change it on their next sign-in.
+          </p>
+        </div>
+        <Badge tone={pending ? 'bg-amber-100 text-amber-800' : 'bg-slate-100 text-slate-500'}>
+          {pending} awaiting first change
+        </Badge>
+      </div>
+
+      <div className="card card-pad">
+        <div className="relative">
+          <Search className="pointer-events-none absolute left-3 top-2.5 h-4 w-4 text-slate-400" />
+          <input
+            className="input pl-9"
+            placeholder="Search name, e-mail or mobile number…"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+          />
+        </div>
+      </div>
+
+      <div className="card overflow-hidden">
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[680px]">
+            <thead className="border-b border-slate-100 bg-slate-50">
+              <tr>
+                <th className="th">User</th>
+                <th className="th">Signs in with</th>
+                <th className="th">Status</th>
+                <th className="th">Last sign-in</th>
+                <th className="th text-right">Password</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {users.length === 0 && (
+                <tr><td colSpan={5}><EmptyState icon={Search} title="No matching accounts" /></td></tr>
+              )}
+              {users.map((u) => (
+                <tr key={u.id} className="row-hover">
+                  <td className="td">
+                    <div className="flex items-center gap-2.5">
+                      <Avatar name={u.name} tone={PARTY_TONE[u.kind]} size="h-8 w-8 text-[10px]" />
+                      <div className="min-w-0">
+                        <div className="truncate font-semibold text-slate-900">{u.name}</div>
+                        <div className="text-xs capitalize text-slate-500">{u.kind}</div>
+                      </div>
+                    </div>
+                  </td>
+                  <td className="td">
+                    <div className="truncate text-xs">{u.email}</div>
+                    <div className="nums text-xs text-slate-500">{u.mobile}</div>
+                  </td>
+                  <td className="td">
+                    {u.mustChangePassword ? (
+                      <Badge tone="bg-amber-100 text-amber-800">
+                        {u.passwordResetAt ? 'Reset — must change' : 'Default password'}
+                      </Badge>
+                    ) : (
+                      <Badge tone="bg-emerald-100 text-emerald-700" icon={ShieldCheck}>Set</Badge>
+                    )}
+                  </td>
+                  <td className="td text-xs">
+                    {u.lastLoginAt ? fmtDateTime(u.lastLoginAt) : <span className="text-slate-400">never</span>}
+                  </td>
+                  <td className="td text-right">
+                    <button type="button" className="btn-ghost btn-sm" onClick={() => setConfirming(u)}>
+                      <RefreshCw className="h-3.5 w-3.5" /> Reset
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <Modal
+        open={!!confirming}
+        onClose={() => setConfirming(null)}
+        title="Reset this password?"
+        subtitle={confirming?.name}
+        size="sm"
+        footer={
+          <div className="flex justify-end gap-2">
+            <button type="button" className="btn-ghost btn-sm" onClick={() => setConfirming(null)}>Cancel</button>
+            <button type="button" className="btn-danger btn-sm" onClick={() => reset(confirming)}>
+              <RefreshCw className="h-3.5 w-3.5" /> Reset password
+            </button>
+          </div>
+        }
+      >
+        {confirming && (
+          <div className="space-y-3 p-5 text-sm text-slate-700">
+            <p>
+              <strong>{confirming.name}</strong> will be signed out of nothing — but their password becomes{' '}
+              <span className="nums font-bold text-slate-900">{DEFAULT_PASSWORD}</span> immediately.
+            </p>
+            <p className="rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-900">
+              Tell them the default in person or by phone, not over chat. They will have to choose a new
+              password before they can use the app again.
+            </p>
+          </div>
+        )}
+      </Modal>
     </div>
   );
 }
@@ -2999,6 +3551,9 @@ function FollowUpQueue() {
    which @media print promotes to the whole page. Do not print from the app tree. */
 
 function DocLetterhead({ docTitle, meta }) {
+  const { state } = useClinic();
+  /* Portals preserve context, so this works inside #print-root too. */
+  const clinic = state?.clinic ?? CLINIC;
   return (
     <header className="avoid-break mb-5 border-b-2 border-slate-800 pb-3">
       <div className="flex items-start gap-3">
@@ -3006,13 +3561,13 @@ function DocLetterhead({ docTitle, meta }) {
           <Plus className="h-7 w-7" strokeWidth={3} />
         </span>
         <div className="flex-1">
-          <h1 className="font-serif text-xl font-bold leading-tight text-slate-900">{CLINIC.name}</h1>
-          <p className="text-[11px] text-slate-600">{CLINIC.tagline}</p>
+          <h1 className="font-serif text-xl font-bold leading-tight text-slate-900">{clinic.name}</h1>
+          <p className="text-[11px] text-slate-600">{clinic.tagline}</p>
           <p className="mt-1 text-[10px] leading-snug text-slate-500">
-            {CLINIC.address} · Tel {CLINIC.phone} · {CLINIC.email}
+            {clinic.address} · Tel {clinic.phone} · {clinic.email}
           </p>
           <p className="text-[10px] text-slate-500">
-            DOH LTO No. {CLINIC.lto} · TIN {CLINIC.tin}
+            DOH LTO No. {clinic.lto} · TIN {clinic.tin}
           </p>
         </div>
         {meta && <div className="text-right text-[10px] leading-snug text-slate-500">{meta}</div>}
@@ -3072,11 +3627,13 @@ function DocPatientLine({ patient, extra }) {
 }
 
 function PrescriptionDoc({ encounter, patient, doctor }) {
+  const { state } = useClinic();
+  const tpl = state?.rxTemplate ?? {};
   const meds = encounter?.meds ?? [];
   return (
     <article className="print-doc bg-white p-8 font-sans text-slate-900">
       <DocLetterhead
-        docTitle="Prescription"
+        docTitle={tpl.heading || 'Prescription'}
         meta={
           <>
             <div>Date: {fmtDate(encounter?.date)}</div>
@@ -3087,12 +3644,14 @@ function PrescriptionDoc({ encounter, patient, doctor }) {
       <DocPatientLine
         patient={patient}
         extra={
-          <div>
-            <dt className="font-semibold uppercase tracking-wide text-slate-400">Weight</dt>
-            <dd className="nums text-slate-800">
-              {encounter?.vitals?.weight ? `${encounter.vitals.weight} kg` : '—'}
-            </dd>
-          </div>
+          tpl.showWeight !== false ? (
+            <div>
+              <dt className="font-semibold uppercase tracking-wide text-slate-400">Weight</dt>
+              <dd className="nums text-slate-800">
+                {encounter?.vitals?.weight ? `${encounter.vitals.weight} kg` : '—'}
+              </dd>
+            </div>
+          ) : null
         }
       />
 
@@ -3125,22 +3684,33 @@ function PrescriptionDoc({ encounter, patient, doctor }) {
         </ol>
       </div>
 
-      {patient?.allergies?.length > 0 && (
+      {tpl.showAllergies !== false && patient?.allergies?.length > 0 && (
         <p className="avoid-break mt-5 rounded border border-rose-300 bg-rose-50 px-3 py-2 text-[11px] text-rose-800">
           <strong>Known allergies:</strong> {patient.allergies.join(', ')}
         </p>
       )}
 
-      <DocSignature doctor={doctor} />
-      <footer className="mt-8 border-t border-slate-200 pt-2 text-center text-[9px] text-slate-400">
-        Generic names are written in compliance with R.A. 6675 (Generics Act of 1988).
-        This prescription is valid for one (1) year from the date issued, except for regulated drugs.
+      {tpl.showStandingInstructions && tpl.standingInstructions && (
+        <p className="avoid-break mt-4 text-[11px] italic leading-snug text-slate-700">
+          {tpl.standingInstructions}
+        </p>
+      )}
+
+      <DocSignature
+        doctor={doctor}
+        label={tpl.signatureLabel || 'Attending Physician'}
+        showLicenses={tpl.showLicenses !== false}
+      />
+      <footer className="mt-8 border-t border-slate-200 pt-2 text-center text-[9px] leading-snug text-slate-400">
+        {tpl.footerNote}
       </footer>
     </article>
   );
 }
 
 function MedicalCertificateDoc({ encounter, patient, doctor, kind = 'certificate', restDays = 2, purpose = '' }) {
+  const { state } = useClinic();
+  const clinic = state?.clinic ?? CLINIC;
   const isAbstract = kind === 'abstract';
   const dx = (encounter?.diagnoses ?? []).map((d) => d.label).join('; ') || 'For evaluation';
   return (
@@ -3220,13 +3790,15 @@ function MedicalCertificateDoc({ encounter, patient, doctor, kind = 'certificate
 
       <DocSignature doctor={doctor} />
       <footer className="mt-8 border-t border-slate-200 pt-2 text-center text-[9px] text-slate-400">
-        Issued electronically by {CLINIC.name}. Verify at {CLINIC.website}/verify using the reference number above.
+        Issued electronically by {clinic.name}. Verify at {clinic.website}/verify using the reference number above.
       </footer>
     </article>
   );
 }
 
 function ReceiptDoc({ invoice, patient, encounter, doctor }) {
+  const { state } = useClinic();
+  const clinic = state?.clinic ?? CLINIC;
   const totals = invoiceTotals(invoice);
   const change = Math.max(0, Number(invoice?.tendered || 0) - totals.total);
   return (
@@ -3335,7 +3907,7 @@ function ReceiptDoc({ invoice, patient, encounter, doctor }) {
           <p>Received by: {invoice?.cashier || 'Front desk'}</p>
           {encounter && <p>Encounter ref. {encounter.id}</p>}
         </div>
-        <FakeQR value={`${CLINIC.website}/verify/${invoice?.id ?? ''}`} size={76} />
+        <FakeQR value={`${clinic.website}/verify/${invoice?.id ?? ''}`} size={76} />
       </div>
 
       {/* Not a BIR-registered Official Receipt — see CLAUDE.md gap 4. */}
@@ -3800,6 +4372,269 @@ function EncounterCard({ encounter, patient, defaultOpen = false, showPatient = 
   );
 }
 
+
+/* A throwaway encounter so the template preview has something to render. */
+const SAMPLE_RX_ENCOUNTER = {
+  id: 'E-PREVIEW',
+  date: ymd(),
+  vitals: { weight: 62 },
+  meds: [
+    {
+      id: 'M-preview-1', name: 'Amoxicillin', strength: '500 mg', form: 'Capsule',
+      route: 'PO', freq: 'TID', days: 7, qty: 21, instructions: 'Take after meals. Complete the full course.',
+    },
+    {
+      id: 'M-preview-2', name: 'Paracetamol', strength: '500 mg', form: 'Tablet',
+      route: 'PO', freq: 'Q6H', days: 3, qty: 12, instructions: 'As needed for fever or pain.',
+    },
+  ],
+};
+
+/* Doctor-owned settings: the signature block, the shared letterhead and the
+   prescription layout, with the real document rendering alongside. */
+function DoctorSettings() {
+  const { state, doctorId, act, toast, openPrint } = useClinic();
+  const doctor = findBy(state.doctors, doctorId);
+  const template = state.rxTemplate;
+  const clinic = state.clinic;
+  const [tab, setTab] = useState('details');
+
+  const samplePatient = state.patients[0];
+  const setDoctor = (patch) => act({ type: 'UPDATE_DOCTOR', id: doctorId, patch });
+  const setTemplate = (patch) => act({ type: 'UPDATE_RX_TEMPLATE', patch });
+  const setClinic = (patch) => act({ type: 'UPDATE_CLINIC', patch });
+
+  const tabs = [
+    { id: 'details', label: 'My details', icon: User },
+    { id: 'template', label: 'Prescription template', icon: FileText },
+    { id: 'letterhead', label: 'Letterhead', icon: Hospital },
+  ];
+
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <h1 className="text-xl font-bold text-slate-900">Settings</h1>
+          <p className="text-sm text-slate-500">
+            Everything here prints on your documents. Changes save as you type.
+          </p>
+        </div>
+        <button
+          type="button"
+          className="btn-ghost btn-sm"
+          onClick={() =>
+            openPrint({
+              title: 'Prescription (template preview)',
+              subtitle: 'Sample data — nothing is recorded',
+              doc: <PrescriptionDoc encounter={SAMPLE_RX_ENCOUNTER} patient={samplePatient} doctor={doctor} />,
+            })
+          }
+        >
+          <Printer className="h-3.5 w-3.5" /> Print a test page
+        </button>
+      </div>
+
+      <div className="grid gap-4 xl:grid-cols-[minmax(0,420px),1fr]">
+        <div className="space-y-4">
+          <div className="flex gap-1 overflow-x-auto rounded-lg bg-white p-1 shadow-sm">
+            {tabs.map((t) => {
+              const Icon = t.icon;
+              return (
+                <button
+                  key={t.id}
+                  type="button"
+                  onClick={() => setTab(t.id)}
+                  className={cx(
+                    'inline-flex flex-1 items-center justify-center gap-1.5 whitespace-nowrap rounded-md px-2 py-1.5 text-xs font-semibold transition',
+                    tab === t.id ? 'bg-slate-900 text-white' : 'text-slate-500 hover:bg-slate-100',
+                  )}
+                >
+                  <Icon className="h-3.5 w-3.5" /> {t.label}
+                </button>
+              );
+            })}
+          </div>
+
+          {tab === 'details' && (
+            <section className="card">
+              <div className="card-head">
+                <h2 className="card-title">Signature block</h2>
+                <Badge tone="bg-slate-100 text-slate-500">prints on every document</Badge>
+              </div>
+              <div className="grid gap-3 p-4 sm:grid-cols-2">
+                <Field label="Full name" required className="sm:col-span-2">
+                  <input className="input" value={doctor?.name ?? ''} onChange={(e) => setDoctor({ name: e.target.value })} />
+                </Field>
+                <Field label="Title / fellowships" hint="e.g. MD, FPCP">
+                  <input className="input" value={doctor?.title ?? ''} onChange={(e) => setDoctor({ title: e.target.value })} />
+                </Field>
+                <Field label="Specialty">
+                  <input className="input" value={doctor?.specialty ?? ''} onChange={(e) => setDoctor({ specialty: e.target.value })} />
+                </Field>
+                <Field label="PRC licence no." required>
+                  <input className="input nums" value={doctor?.prc ?? ''} onChange={(e) => setDoctor({ prc: e.target.value })} />
+                </Field>
+                <Field label="PTR no." required>
+                  <input className="input nums" value={doctor?.ptr ?? ''} onChange={(e) => setDoctor({ ptr: e.target.value })} />
+                </Field>
+                <Field label="S2 licence no." hint="Required to prescribe dangerous drugs." className="sm:col-span-2">
+                  <input className="input nums" value={doctor?.s2 ?? ''} onChange={(e) => setDoctor({ s2: e.target.value })} />
+                </Field>
+                <Field label="Clinic days">
+                  <input className="input" value={doctor?.days ?? ''} onChange={(e) => setDoctor({ days: e.target.value })} />
+                </Field>
+                <Field label="Clinic hours">
+                  <input className="input" value={doctor?.hours ?? ''} onChange={(e) => setDoctor({ hours: e.target.value })} />
+                </Field>
+                <Field label="Consultation fee">
+                  <input
+                    type="number"
+                    min="0"
+                    className="input nums"
+                    value={doctor?.fee ?? 0}
+                    onChange={(e) => setDoctor({ fee: Number(e.target.value) || 0 })}
+                  />
+                </Field>
+                <Field label="Room">
+                  <input className="input" value={doctor?.room ?? ''} onChange={(e) => setDoctor({ room: e.target.value })} />
+                </Field>
+              </div>
+            </section>
+          )}
+
+          {tab === 'template' && (
+            <section className="card">
+              <div className="card-head">
+                <h2 className="card-title">Prescription layout</h2>
+              </div>
+              <div className="space-y-3 p-4">
+                <Field label="Heading">
+                  <input className="input" value={template.heading} onChange={(e) => setTemplate({ heading: e.target.value })} />
+                </Field>
+                <Field label="Signature caption">
+                  <input
+                    className="input"
+                    value={template.signatureLabel}
+                    onChange={(e) => setTemplate({ signatureLabel: e.target.value })}
+                  />
+                </Field>
+
+                <div className="space-y-1.5 rounded-lg bg-slate-50 p-3">
+                  <p className="label !mb-1">Show on the prescription</p>
+                  {[
+                    ['showWeight', 'Patient weight', 'Useful for paediatric dosing.'],
+                    ['showAllergies', 'Known allergies box', 'Red banner listing documented allergies.'],
+                    ['showLicenses', 'PRC / PTR / S2 numbers', 'Required on most Philippine prescriptions.'],
+                    ['showStandingInstructions', 'Standing instructions', 'A fixed note added under every prescription.'],
+                  ].map(([key, label, hint]) => (
+                    <label key={key} className="flex cursor-pointer items-start gap-2.5 rounded-lg px-1 py-1.5 hover:bg-white">
+                      <input
+                        type="checkbox"
+                        className="mt-0.5 h-4 w-4 accent-teal-600"
+                        checked={!!template[key]}
+                        onChange={(e) => setTemplate({ [key]: e.target.checked })}
+                      />
+                      <span>
+                        <span className="block text-xs font-semibold text-slate-800">{label}</span>
+                        <span className="block text-[11px] text-slate-500">{hint}</span>
+                      </span>
+                    </label>
+                  ))}
+                </div>
+
+                {template.showStandingInstructions && (
+                  <Field label="Standing instructions">
+                    <textarea
+                      className="input min-h-[70px] resize-y"
+                      value={template.standingInstructions}
+                      onChange={(e) => setTemplate({ standingInstructions: e.target.value })}
+                    />
+                  </Field>
+                )}
+
+                <Field label="Footer note" hint="Printed in small type at the bottom of the page.">
+                  <textarea
+                    className="input min-h-[80px] resize-y"
+                    value={template.footerNote}
+                    onChange={(e) => setTemplate({ footerNote: e.target.value })}
+                  />
+                </Field>
+
+                <button
+                  type="button"
+                  className="btn-ghost btn-sm"
+                  onClick={() => {
+                    setTemplate({
+                      heading: 'Prescription',
+                      signatureLabel: 'Attending Physician',
+                      showWeight: true,
+                      showAllergies: true,
+                      showLicenses: true,
+                      showStandingInstructions: false,
+                      footerNote:
+                        'Generic names are written in compliance with R.A. 6675 (Generics Act of 1988). This prescription is valid for one (1) year from the date issued, except for regulated drugs.',
+                    });
+                    toast('Prescription template reset to the clinic default', 'success');
+                  }}
+                >
+                  <RefreshCw className="h-3.5 w-3.5" /> Reset to default
+                </button>
+              </div>
+            </section>
+          )}
+
+          {tab === 'letterhead' && (
+            <section className="card">
+              <div className="card-head">
+                <h2 className="card-title">Clinic letterhead</h2>
+                <Badge tone="bg-amber-100 text-amber-800">shared by all documents</Badge>
+              </div>
+              <div className="grid gap-3 p-4">
+                <Field label="Clinic name" required>
+                  <input className="input" value={clinic.name} onChange={(e) => setClinic({ name: e.target.value })} />
+                </Field>
+                <Field label="Tagline">
+                  <input className="input" value={clinic.tagline} onChange={(e) => setClinic({ tagline: e.target.value })} />
+                </Field>
+                <Field label="Address">
+                  <textarea className="input min-h-[60px] resize-y" value={clinic.address} onChange={(e) => setClinic({ address: e.target.value })} />
+                </Field>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <Field label="Telephone">
+                    <input className="input nums" value={clinic.phone} onChange={(e) => setClinic({ phone: e.target.value })} />
+                  </Field>
+                  <Field label="E-mail">
+                    <input className="input" value={clinic.email} onChange={(e) => setClinic({ email: e.target.value })} />
+                  </Field>
+                  <Field label="DOH LTO no." hint="Placeholder until the real licence is issued.">
+                    <input className="input nums" value={clinic.lto} onChange={(e) => setClinic({ lto: e.target.value })} />
+                  </Field>
+                  <Field label="TIN">
+                    <input className="input nums" value={clinic.tin} onChange={(e) => setClinic({ tin: e.target.value })} />
+                  </Field>
+                </div>
+              </div>
+            </section>
+          )}
+        </div>
+
+        {/* Live preview of the real document component. */}
+        <section className="card overflow-hidden">
+          <div className="card-head">
+            <h2 className="card-title">Preview</h2>
+            <Badge tone="bg-slate-100 text-slate-500">sample patient &amp; medicines</Badge>
+          </div>
+          <div className="thin-scroll max-h-[40rem] overflow-auto bg-slate-200 p-4">
+            <div className="mx-auto max-w-[210mm] overflow-hidden rounded shadow-lg ring-1 ring-slate-300">
+              <PrescriptionDoc encounter={SAMPLE_RX_ENCOUNTER} patient={samplePatient} doctor={doctor} />
+            </div>
+          </div>
+        </section>
+      </div>
+    </div>
+  );
+}
+
 /* ===== 7. Doctor portal ========================================================= */
 
 function DoctorPortal() {
@@ -3835,6 +4670,8 @@ function DoctorPortal() {
     { id: 'consult', label: 'Consultation', icon: Stethoscope, count: inConsult ? 1 : 0 },
     { id: 'records', label: 'Records', icon: ClipboardList },
     { id: 'messages', label: 'Messages', icon: MessageSquare, count: unreadThreadCount(state, me) },
+    { id: 'accounts', label: 'Accounts', icon: ShieldCheck },
+    { id: 'settings', label: 'Settings', icon: Settings2 },
   ];
 
   return (
@@ -3856,6 +4693,8 @@ function DoctorPortal() {
         )}
         {tab === 'records' && <RecordsSearch onOpenChart={setChartId} />}
         {tab === 'messages' && <MessagesPanel accent="teal" />}
+        {tab === 'accounts' && <AccountsPanel accent="teal" />}
+        {tab === 'settings' && <DoctorSettings />}
       </main>
       <PatientChart patientId={chartId} open={!!chartId} onClose={() => setChartId(null)} />
     </>
@@ -5207,14 +6046,15 @@ function PatientDashboard({ patient, onBook }) {
 
 function BookAppointment({ patient, onBooked }) {
   const { state, act, toast } = useClinic();
-  const [dept, setDept] = useState('');
-  const [doctorId, setDoctorId] = useState('');
+  /* Single-doctor clinic: there is nobody to choose between, so booking starts
+     at the calendar instead of a department and doctor step. */
+  const doctor = state.doctors[0];
+  const doctorId = doctor?.id ?? '';
+  const dept = doctor?.dept ?? '';
   const [date, setDate] = useState('');
   const [time, setTime] = useState('');
   const [mode, setMode] = useState('In-clinic');
   const [complaint, setComplaint] = useState('');
-
-  const doctors = state.doctors.filter((d) => !dept || d.dept === dept);
 
   /* Slots already taken for that doctor on that date. Clinic days are display-only
      for now — booking does not enforce them yet (CLAUDE.md gap 9). */
@@ -5226,8 +6066,7 @@ function BookAppointment({ patient, onBooked }) {
     [state.appointments, doctorId, date],
   );
 
-  const doctor = findBy(state.doctors, doctorId);
-  const ready = dept && doctorId && date && time && complaint.trim();
+  const ready = !!(doctorId && date && time && complaint.trim());
 
   const book = () => {
     if (!ready) {
@@ -5253,10 +6092,8 @@ function BookAppointment({ patient, onBooked }) {
   };
 
   const steps = [
-    { n: 1, label: 'Department', done: !!dept },
-    { n: 2, label: 'Doctor', done: !!doctorId },
-    { n: 3, label: 'Date & time', done: !!(date && time) },
-    { n: 4, label: 'Details', done: !!complaint.trim() },
+    { n: 1, label: 'Date & time', done: !!(date && time) },
+    { n: 2, label: 'Visit details', done: !!complaint.trim() },
   ];
 
   return (
@@ -5280,66 +6117,21 @@ function BookAppointment({ patient, onBooked }) {
         </ol>
       </div>
 
+      {/* With one doctor there is nothing to pick, so show who you will be seeing. */}
       <section className="card card-pad">
-        <h2 className="card-title mb-3">1. Choose a department</h2>
-        <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-          {DEPARTMENTS.map((d) => (
-            <button
-              key={d.id}
-              type="button"
-              onClick={() => {
-                setDept(d.id);
-                setDoctorId('');
-                setTime('');
-              }}
-              className={cx(
-                'rounded-lg border px-3 py-2.5 text-left text-sm font-medium transition',
-                dept === d.id
-                  ? 'border-indigo-500 bg-indigo-50 text-indigo-800'
-                  : 'border-slate-200 text-slate-600 hover:border-slate-300 hover:bg-slate-50',
-              )}
-            >
-              {d.label}
-            </button>
-          ))}
+        <div className="flex flex-wrap items-center gap-3">
+          <Avatar name={doctor?.name ?? ''} tone="bg-indigo-100 text-indigo-700" size="h-11 w-11 text-sm" />
+          <div className="min-w-0 flex-1">
+            <p className="text-sm font-bold text-slate-900">{doctorName(doctor)}{doctor?.title ? `, ${doctor.title}` : ''}</p>
+            <p className="text-xs text-slate-600">{doctor?.specialty}</p>
+            <p className="text-[11px] text-slate-400">{doctor?.days} · {doctor?.hours}</p>
+          </div>
+          <span className="nums text-sm font-semibold text-slate-600">{peso(doctor?.fee ?? 0)}</span>
         </div>
       </section>
 
-      {dept && (
-        <section className="card card-pad">
-          <h2 className="card-title mb-3">2. Choose a doctor</h2>
-          <div className="grid gap-2 sm:grid-cols-2">
-            {doctors.map((d) => (
-              <button
-                key={d.id}
-                type="button"
-                onClick={() => {
-                  setDoctorId(d.id);
-                  setTime('');
-                }}
-                className={cx(
-                  'flex items-center gap-3 rounded-lg border px-3 py-2.5 text-left transition',
-                  doctorId === d.id
-                    ? 'border-indigo-500 bg-indigo-50'
-                    : 'border-slate-200 hover:border-slate-300 hover:bg-slate-50',
-                )}
-              >
-                <Avatar name={d.name} tone="bg-indigo-100 text-indigo-700" />
-                <span className="min-w-0 flex-1">
-                  <span className="block truncate text-sm font-semibold text-slate-900">Dr. {d.name}</span>
-                  <span className="block truncate text-xs text-slate-500">{d.specialty}</span>
-                  <span className="block truncate text-[11px] text-slate-400">{d.days} · {d.hours}</span>
-                </span>
-                <span className="nums shrink-0 text-xs font-semibold text-slate-600">{peso(d.fee)}</span>
-              </button>
-            ))}
-          </div>
-        </section>
-      )}
-
-      {doctorId && (
-        <section className="card card-pad">
-          <h2 className="card-title mb-3">3. Pick a date and time</h2>
+      <section className="card card-pad">
+          <h2 className="card-title mb-3">1. Pick a date and time</h2>
           <Field label="Date" className="mb-3 max-w-xs">
             <input
               type="date"
@@ -5377,12 +6169,11 @@ function BookAppointment({ patient, onBooked }) {
               })}
             </div>
           )}
-        </section>
-      )}
+      </section>
 
       {time && (
         <section className="card card-pad">
-          <h2 className="card-title mb-3">4. Visit details</h2>
+          <h2 className="card-title mb-3">2. Visit details</h2>
           <div className="grid gap-3 sm:grid-cols-2">
             <Field label="Consultation mode">
               <div className="flex gap-2">
@@ -5638,6 +6429,7 @@ function StaffPortal() {
     { id: 'billing', label: 'Billing', icon: PhilippinePeso, count: pending.length },
     { id: 'followups', label: 'Follow-ups', icon: CalendarClock, count: dueReminders(state).length },
     { id: 'messages', label: 'Messages', icon: MessageSquare, count: unreadThreadCount(state, me) },
+    { id: 'accounts', label: 'Accounts', icon: ShieldCheck },
   ];
 
   return (
@@ -5658,6 +6450,7 @@ function StaffPortal() {
         {tab === 'billing' && <Billing />}
         {tab === 'followups' && <FollowUpQueue />}
         {tab === 'messages' && <MessagesPanel accent="sky" />}
+        {tab === 'accounts' && <AccountsPanel accent="sky" />}
       </main>
       <PatientChart
         patientId={chartId}
@@ -6206,14 +6999,27 @@ function CheckInForm({ open, prefill, onClose }) {
         )}
 
         <div className="grid gap-3 border-t border-slate-100 pt-4 sm:grid-cols-2">
-          <Field label="Assign to doctor">
-            <select className="input" value={doctorId} onChange={(e) => setDoctorId(e.target.value)}>
-              {state.doctors.map((d) => (
-                <option key={d.id} value={d.id}>
-                  Dr. {d.name} · {d.specialty}
-                </option>
-              ))}
-            </select>
+          <Field label="Attending doctor">
+            {state.doctors.length > 1 ? (
+              <select className="input" value={doctorId} onChange={(e) => setDoctorId(e.target.value)}>
+                {state.doctors.map((d) => (
+                  <option key={d.id} value={d.id}>
+                    Dr. {d.name} · {d.specialty}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              /* One doctor — assignment is automatic, so just say who. */
+              <div className="flex items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2">
+                <Avatar name={state.doctors[0]?.name ?? ''} tone="bg-teal-100 text-teal-700" size="h-7 w-7 text-[10px]" />
+                <span className="min-w-0">
+                  <span className="block truncate text-sm font-medium text-slate-800">
+                    {doctorName(state.doctors[0])}
+                  </span>
+                  <span className="block truncate text-[11px] text-slate-500">{state.doctors[0]?.specialty}</span>
+                </span>
+              </div>
+            )}
           </Field>
           <Field label="Reason for visit" required>
             <input
@@ -7245,28 +8051,12 @@ function CustomChargeForm({ onAdd }) {
 
 /* ===== 10. App root ============================================================= */
 
-const VALID_ROLES = ROLES.map((r) => r.id);
-
-/* The manifest shortcuts deep-link with ?portal=staff|doctor|patient. */
-const initialRole = () => {
-  try {
-    const fromUrl = new URLSearchParams(window.location.search).get('portal');
-    if (fromUrl && VALID_ROLES.includes(fromUrl)) return fromUrl;
-  } catch {
-    /* no URL available */
-  }
-  return 'staff';
-};
-
 export default function App() {
   const [state, dispatch] = usePersistentStore();
   const network = useNetwork();
   const swState = useServiceWorkerState();
 
-  const [role, setRole] = useState(initialRole);
-  const [doctorId, setDoctorId] = useState('D-0001');
-  const [patientId, setPatientId] = useState('P-0005');
-  const [staffId, setStaffId] = useState('S-0001');
+  const { session, signIn, signOut } = useSession();
   const [toasts, setToasts] = useState([]);
   const [printJob, setPrintJob] = useState(null);
   const [outbox, setOutbox] = useState(0);
@@ -7306,12 +8096,33 @@ export default function App() {
 
   const openPrint = useCallback((job) => setPrintJob(job), []);
 
-  /* Keep the signed-in demo identities pointing at rows that actually exist. */
+  /* The account is the identity. Resetting the demo rebuilds the user table, so
+     a session pointing at a user that no longer exists simply signs out. */
+  const currentUser = session ? state.users?.find((u) => u.id === session.userId) ?? null : null;
+  const role = currentUser?.kind ?? null;
+  const doctorId = role === 'doctor' ? currentUser.refId : state.doctors[0]?.id ?? '';
+  const patientId = role === 'patient' ? currentUser.refId : '';
+  const staffId = role === 'staff' ? currentUser.refId : '';
+
   useEffect(() => {
-    if (!findBy(state.doctors, doctorId) && state.doctors[0]) setDoctorId(state.doctors[0].id);
-    if (!findBy(state.patients, patientId) && state.patients[0]) setPatientId(state.patients[0].id);
-    if (!findBy(state.staff, staffId) && state.staff[0]) setStaffId(state.staff[0].id);
-  }, [state.doctors, state.patients, state.staff, doctorId, patientId, staffId]);
+    if (session && !currentUser) signOut();
+  }, [session, currentUser, signOut]);
+
+  const handleSignIn = useCallback(
+    (user, remember) => {
+      signIn(user.id, remember);
+      dispatch({ type: 'TOUCH_LOGIN', id: user.id, at: new Date().toISOString() });
+    },
+    [signIn, dispatch],
+  );
+
+  const changePassword = useCallback(
+    (password) => {
+      dispatch({ type: 'SET_PASSWORD', id: currentUser.id, password });
+      toast('Password updated', 'success');
+    },
+    [dispatch, currentUser, toast],
+  );
 
   const value = useMemo(
     () => ({
@@ -7319,11 +8130,10 @@ export default function App() {
       act,
       role,
       doctorId,
-      setDoctorId,
       patientId,
-      setPatientId,
       staffId,
-      setStaffId,
+      currentUser,
+      signOut,
       /* Who the current portal is acting as, in messaging/notification terms. */
       me: { kind: role, id: role === 'doctor' ? doctorId : role === 'patient' ? patientId : staffId },
       toast,
@@ -7336,14 +8146,23 @@ export default function App() {
       simulatedOffline: network.simulatedOffline,
       setSimulatedOffline: network.setSimulatedOffline,
     }),
-    [state, act, role, doctorId, patientId, staffId, toast, openPrint, outbox, swState, resetDemo, network],
+    [state, act, role, doctorId, patientId, staffId, currentUser, signOut, toast, openPrint, outbox, swState, resetDemo, network],
   );
+
+  /* Every hook above runs unconditionally; the gate comes after them. */
+  if (!currentUser) {
+    return (
+      <ClinicContext.Provider value={value}>
+        <LoginScreen users={state.users ?? []} onSignIn={handleSignIn} />
+      </ClinicContext.Provider>
+    );
+  }
 
   return (
     <ClinicContext.Provider value={value}>
       <div className="min-h-screen bg-slate-100">
         <InstallBanner />
-        <Header role={role} setRole={setRole} />
+        <Header />
 
         {!network.online && (
           <div className="no-print bg-amber-500 px-4 py-1.5 text-center text-xs font-semibold text-white">
@@ -7357,9 +8176,10 @@ export default function App() {
         {role === 'staff' && <StaffPortal />}
 
         <footer className="no-print mx-auto max-w-7xl px-4 py-8 text-center text-[11px] leading-relaxed text-slate-400">
-          <p className="font-semibold text-slate-500">{CLINIC.name}</p>
+          <p className="font-semibold text-slate-500">{state.clinic?.name ?? CLINIC.name}</p>
           <p>
-            {CLINIC.address} · {CLINIC.phone} · {CLINIC.email}
+            {state.clinic?.address ?? CLINIC.address} · {state.clinic?.phone ?? CLINIC.phone} ·{' '}
+            {state.clinic?.email ?? CLINIC.email}
           </p>
           <p className="mt-2">
             Demo build — seeded sample data held in this browser only. No patient data leaves this device;
@@ -7370,6 +8190,16 @@ export default function App() {
 
         <Toasts items={toasts} onDismiss={(id) => setToasts((list) => list.filter((t) => t.id !== id))} />
         <PrintCenter job={printJob} onClose={() => setPrintJob(null)} />
+
+        {/* No way past this until the default (or reset) password is replaced. */}
+        {currentUser.mustChangePassword && (
+          <ForcePasswordChange
+            user={currentUser}
+            wasReset={!!currentUser.passwordResetAt}
+            onChange={changePassword}
+            onSignOut={signOut}
+          />
+        )}
       </div>
     </ClinicContext.Provider>
   );
