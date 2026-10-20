@@ -1,0 +1,25 @@
+{
+  "name": "MediClinic — Outpatient Clinic System",
+  "short_name": "MediClinic",
+  "description": "Queueing, consultation, records, pharmacy and billing for a small Philippine outpatient clinic.",
+  "id": "/",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#f8fafc",
+  "theme_color": "#0f766e",
+  "lang": "en-PH",
+  "dir": "ltr",
+  "categories": ["medical", "health", "productivity"],
+  "icons": [
+    { "src": "/icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/icons/maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ],
+  "shortcuts": [
+    { "name": "Reception queue", "short_name": "Queue", "url": "/?portal=staff" },
+    { "name": "Doctor overview", "short_name": "Doctor", "url": "/?portal=doctor" },
+    { "name": "My appointments", "short_name": "Patient", "url": "/?portal=patient" }
+  ]
+}
