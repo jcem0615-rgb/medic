@@ -1606,6 +1606,13 @@ function reducer(state, action) {
         ),
       };
 
+    /* Amending an already-issued encounter (e.g. correcting a prescription). */
+    case 'UPDATE_ENCOUNTER':
+      return {
+        ...state,
+        encounters: state.encounters.map((e) => (e.id === action.id ? { ...e, ...action.patch } : e)),
+      };
+
     case 'UPDATE_INVOICE':
       return {
         ...state,
@@ -2719,18 +2726,44 @@ function StatusBadge({ status, className }) {
   );
 }
 
+/* Overlays stack (a print preview opens over a chart slide-over). Escape must
+   close only the topmost one, so they share a stack instead of each listening
+   on the document and all firing at once. */
+const escapeStack = [];
+
+function useEscapeKey(onClose, active = true) {
+  const handler = useRef(onClose);
+  handler.current = onClose;
+
+  useEffect(() => {
+    if (!active) return undefined;
+    const entry = { fire: () => handler.current?.() };
+    escapeStack.push(entry);
+    const onKey = (e) => {
+      if (e.key !== 'Escape') return;
+      if (escapeStack[escapeStack.length - 1] !== entry) return;
+      entry.fire();
+    };
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('keydown', onKey);
+      const i = escapeStack.indexOf(entry);
+      if (i >= 0) escapeStack.splice(i, 1);
+    };
+  }, [active]);
+}
+
 function Modal({ open, onClose, title, subtitle, children, footer, size = 'md' }) {
+  useEscapeKey(onClose, open);
+
   useEffect(() => {
     if (!open) return undefined;
-    const onKey = (e) => e.key === 'Escape' && onClose();
-    document.addEventListener('keydown', onKey);
     const prev = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
     return () => {
-      document.removeEventListener('keydown', onKey);
       document.body.style.overflow = prev;
     };
-  }, [open, onClose]);
+  }, [open]);
 
   if (!open) return null;
   const width = { sm: 'max-w-md', md: 'max-w-2xl', lg: 'max-w-4xl', xl: 'max-w-6xl' }[size];
@@ -2769,17 +2802,16 @@ function Modal({ open, onClose, title, subtitle, children, footer, size = 'md' }
 }
 
 function SlideOver({ open, onClose, title, subtitle, children, footer, width = 'max-w-2xl' }) {
+  useEscapeKey(onClose, open);
+
   useEffect(() => {
     if (!open) return undefined;
-    const onKey = (e) => e.key === 'Escape' && onClose();
-    document.addEventListener('keydown', onKey);
     const prev = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
     return () => {
-      document.removeEventListener('keydown', onKey);
       document.body.style.overflow = prev;
     };
-  }, [open, onClose]);
+  }, [open]);
 
   if (!open) return null;
 
@@ -3970,6 +4002,14 @@ function PrescriptionDoc({ encounter, patient, doctor }) {
         </p>
       )}
 
+      {encounter?.medsAmendedAt && (
+        <p className="avoid-break mt-4 text-[11px] font-medium text-slate-700">
+          Amended {fmtDate(ymd(new Date(encounter.medsAmendedAt)))}
+          {encounter.medsAmendedBy ? ` by ${encounter.medsAmendedBy}` : ''} — this copy supersedes the
+          prescription issued {fmtDate(encounter.date)}.
+        </p>
+      )}
+
       {tpl.showStandingInstructions && tpl.standingInstructions && (
         <p className="avoid-break mt-4 text-[11px] italic leading-snug text-slate-700">
           {tpl.standingInstructions}
@@ -4242,6 +4282,7 @@ function PrintCenter({ job, onClose }) {
 function PatientChart({ patientId, open, onClose, onCheckIn }) {
   const { state, role, openPrint } = useClinic();
   const [tab, setTab] = useState('summary');
+  const [editingRx, setEditingRx] = useState(null);
 
   const patient = findBy(state.patients, patientId);
   const encounters = useMemo(
@@ -4446,26 +4487,41 @@ function PatientChart({ patientId, open, onClose, onCheckIn }) {
                     <p className="text-sm font-semibold text-slate-900">{fmtDate(e.date)}</p>
                     <p className="text-xs text-slate-500">{doctorName(findBy(state.doctors, e.doctorId))}</p>
                   </div>
-                  <button
-                    type="button"
-                    className="btn-ghost btn-sm"
-                    onClick={() =>
-                      openPrint({
-                        title: 'Prescription',
-                        subtitle: `${patientName(patient)} · ${fmtDate(e.date)}`,
-                        doc: (
-                          <PrescriptionDoc
-                            encounter={e}
-                            patient={patient}
-                            doctor={findBy(state.doctors, e.doctorId)}
-                          />
-                        ),
-                      })
-                    }
-                  >
-                    <Printer className="h-3.5 w-3.5" /> Print
-                  </button>
+                  <div className="flex gap-1.5">
+                    {/* Only the doctor may change what was prescribed. */}
+                    {role === 'doctor' && (
+                      <button type="button" className="btn-ghost btn-sm" onClick={() => setEditingRx(e)}>
+                        <Pill className="h-3.5 w-3.5" /> Edit
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      className="btn-ghost btn-sm"
+                      onClick={() =>
+                        openPrint({
+                          title: 'Prescription',
+                          subtitle: `${patientName(patient)} · ${fmtDate(e.date)}`,
+                          doc: (
+                            <PrescriptionDoc
+                              encounter={e}
+                              patient={patient}
+                              doctor={findBy(state.doctors, e.doctorId)}
+                            />
+                          ),
+                        })
+                      }
+                    >
+                      <Printer className="h-3.5 w-3.5" /> Print
+                    </button>
+                  </div>
                 </div>
+
+                {e.medsAmendedAt && (
+                  <p className="mb-2 text-[11px] font-medium text-amber-700">
+                    Amended {fmtDateTime(e.medsAmendedAt)}
+                    {e.medsAmendedBy ? ` by ${e.medsAmendedBy}` : ''}
+                  </p>
+                )}
                 <ul className="space-y-1.5">
                   {e.meds.map((m, i) => (
                     <li key={m.id ?? i} className="flex items-start justify-between gap-3 text-sm">
@@ -4483,6 +4539,12 @@ function PatientChart({ patientId, open, onClose, onCheckIn }) {
             ))}
         </div>
       )}
+
+      <PrescriptionEditor
+        encounter={editingRx}
+        patient={patient}
+        onClose={() => setEditingRx(null)}
+      />
 
       {tab === 'billing' && (
         <div className="space-y-3">
@@ -4530,6 +4592,123 @@ function PatientChart({ patientId, open, onClose, onCheckIn }) {
         </div>
       )}
     </SlideOver>
+  );
+}
+
+/* Amend an already-issued prescription. Reuses MedicationBuilder, so the allergy
+   and stock checks that apply during a consultation apply to a correction too.
+   The change is stamped onto the encounter — an issued prescription should never
+   be rewritten without a trace, even in a demo (CLAUDE.md gap 8). */
+function PrescriptionEditor({ encounter, patient, onClose }) {
+  const { state, act, toast, me, openPrint } = useClinic();
+  const [meds, setMeds] = useState([]);
+
+  useEffect(() => {
+    setMeds(encounter?.meds ? encounter.meds.map((m) => ({ ...m })) : []);
+  }, [encounter]);
+
+  if (!encounter) return null;
+
+  const doctor = findBy(state.doctors, encounter.doctorId);
+  const original = encounter.meds ?? [];
+  const changed =
+    meds.length !== original.length ||
+    meds.some((m, i) => {
+      const o = original[i];
+      return (
+        !o ||
+        o.itemId !== m.itemId ||
+        String(o.freq) !== String(m.freq) ||
+        String(o.days) !== String(m.days) ||
+        String(o.qty) !== String(m.qty) ||
+        String(o.route) !== String(m.route) ||
+        String(o.instructions ?? '') !== String(m.instructions ?? '')
+      );
+    });
+
+  const save = () => {
+    if (!changed) {
+      toast('Nothing changed on this prescription.', 'warn');
+      return;
+    }
+    const at = new Date().toISOString();
+    act({
+      type: 'UPDATE_ENCOUNTER',
+      id: encounter.id,
+      patch: {
+        meds,
+        medsAmendedAt: at,
+        medsAmendedBy: partyName(state, me),
+        /* Keep what was first issued, so the amendment is auditable later. */
+        medsOriginal: encounter.medsOriginal ?? original,
+      },
+    });
+    toast(
+      `Prescription for ${fmtDate(encounter.date)} amended — ${meds.length} medication${meds.length === 1 ? '' : 's'}`,
+      'success',
+    );
+    onClose();
+  };
+
+  return (
+    <Modal
+      open
+      onClose={onClose}
+      title="Edit prescription"
+      subtitle={`${patientName(patient)} · issued ${fmtDate(encounter.date)} · ${doctorName(doctor)}`}
+      size="lg"
+      footer={
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <p className="text-[11px] text-slate-500">
+            The amendment is recorded on the record and printed on the prescription.
+          </p>
+          <div className="flex gap-2">
+            <button type="button" className="btn-ghost btn-sm" onClick={onClose}>Cancel</button>
+            <button
+              type="button"
+              className="btn-ghost btn-sm"
+              onClick={() =>
+                openPrint({
+                  title: 'Prescription (unsaved preview)',
+                  subtitle: patientName(patient),
+                  doc: (
+                    <PrescriptionDoc
+                      encounter={{ ...encounter, meds }}
+                      patient={patient}
+                      doctor={doctor}
+                    />
+                  ),
+                })
+              }
+            >
+              <Printer className="h-3.5 w-3.5" /> Preview
+            </button>
+            <button type="button" className="btn-primary btn-sm" onClick={save} disabled={!changed}>
+              <CheckCircle2 className="h-3.5 w-3.5" /> Save amendment
+            </button>
+          </div>
+        </div>
+      }
+    >
+      <div className="space-y-3 p-5">
+        {encounter.medsAmendedAt && (
+          <p className="flex items-start gap-2 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-900">
+            <Info className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+            This prescription was already amended {fmtDateTime(encounter.medsAmendedAt)}
+            {encounter.medsAmendedBy ? ` by ${encounter.medsAmendedBy}` : ''}. The originally issued
+            medicines are kept on the record.
+          </p>
+        )}
+
+        <MedicationBuilder meds={meds} patient={patient} onChange={setMeds} />
+
+        {meds.length === 0 && (
+          <p className="rounded-lg bg-rose-50 px-3 py-2 text-xs text-rose-800">
+            Saving with no medicines leaves this visit with an empty prescription.
+          </p>
+        )}
+      </div>
+    </Modal>
   );
 }
 

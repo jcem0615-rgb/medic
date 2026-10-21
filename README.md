@@ -92,6 +92,9 @@ syncs across tabs through the `storage` event.
 - **Device notifications** — open the bell, turn them on, then (in another tab as Staff) send a follow-up
   reminder or a message. A real system notification pops up. It only works while the app is open on that
   device — there is no push server.
+- **Amend a prescription** — as the Doctor, open a patient's chart → *Prescriptions* → *Edit*. Change a
+  course or add a medicine; the chart and the printed copy both record that it was amended, and the
+  originally issued list is kept.
 - **Printing** — prescriptions, medical certificates, medical abstracts and billing statements all print
   on the clinic letterhead. Use the print dialog to save as PDF.
 

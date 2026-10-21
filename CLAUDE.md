@@ -96,6 +96,17 @@ know goes through the attending doctor or the phone. The rule is enforced in two
 recipient list is built from it, *and* `SEND_MESSAGE` re-checks it in the reducer, so a hand-crafted
 dispatch can't create a forbidden thread. Threads are two-party only.
 
+## Amending a prescription
+The doctor can edit an already-issued prescription from the chart's **Prescriptions** tab
+(`PrescriptionEditor`, doctor-only). It reuses `MedicationBuilder`, so the allergy and stock checks that
+apply during a consultation apply to a correction too. Saving writes `UPDATE_ENCOUNTER` with the new
+`meds` plus `medsAmendedAt` / `medsAmendedBy`, and keeps the first-issued list in `medsOriginal` — an
+issued prescription is never rewritten without a trace. The chart shows an "Amended" line and the printed
+copy states that it supersedes the original. Save is disabled until something actually changes.
+
+This is a stand-in for a real amendment trail: there is still no append-only audit log (gap 8), and
+nothing stops a later edit overwriting `medsAmendedBy`.
+
 ## Clinic locations
 A doctor may hold clinic at several sites. `doctor.locations[]` carries name, address, phone, room, days,
 hours and fee, with exactly one `primary` — `primaryLocation()` supplies the room shown on the board and
@@ -131,6 +142,8 @@ tube, vial, amp, pc, respule, sachet) suggest a quantity of 1 instead of `autoQt
 - Generic drug names (R.A. 6675). Prescription signature block shows PRC, PTR and S2 numbers.
 - Colors: teal = doctor/clinical, indigo = patient, sky = staff. Status tones live in `STATUS_TONE`.
 - Never define components inside other components' render bodies (caused remount/focus loss once — fixed).
+- Overlays share `useEscapeKey`/`escapeStack` so Escape closes only the topmost one. Any new overlay must
+  use it rather than its own `keydown` listener, or it will close everything stacked beneath it.
 - Keep `@media print` approach: anything printable must render through `PrintCenter` → `#print-root`.
 
 ## Known gaps / deliberately deferred
