@@ -85,6 +85,13 @@ syncs across tabs through the `storage` event.
   allergies box and watch the real document redraw beside you.
 - **Password reset** — as the Doctor or Staff, open *Accounts* and reset a patient. Sign in as them with
   `123456` and the forced-change window appears.
+- **Clinic logo** — Doctor → *Settings* → *Letterhead* → upload a PNG. It appears on the header, the
+  login screen and every printed document.
+- **Several clinics** — the doctor holds clinic at two sites out of the box. Add a third in *Settings*,
+  then book as a patient: the location picker appears and the address shows on the dashboard.
+- **Device notifications** — open the bell, turn them on, then (in another tab as Staff) send a follow-up
+  reminder or a message. A real system notification pops up. It only works while the app is open on that
+  device — there is no push server.
 - **Printing** — prescriptions, medical certificates, medical abstracts and billing statements all print
   on the clinic letterhead. Use the print dialog to save as PDF.
 

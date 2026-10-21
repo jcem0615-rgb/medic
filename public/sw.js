@@ -3,7 +3,7 @@
    with the cached shell as the offline fallback), cache-first for hashed static assets.
    Bump CACHE_VERSION on every release — the activate handler drops older caches. */
 
-const CACHE_VERSION = 'mediclinic-v1';
+const CACHE_VERSION = 'mediclinic-v2';
 const SHELL = '/index.html';
 const PRECACHE = [
   '/',
@@ -37,6 +37,27 @@ self.addEventListener('activate', (event) => {
 
 self.addEventListener('message', (event) => {
   if (event.data === 'mc-skip-waiting') self.skipWaiting();
+});
+
+/* Tapping a notification focuses an open window, or opens one. `data.url` is set
+   by the page when it calls showNotification(). */
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close();
+  const target = event.notification.data?.url || '/';
+  event.waitUntil(
+    (async () => {
+      const all = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+      for (const client of all) {
+        if ('focus' in client) {
+          if ('navigate' in client && new URL(client.url).pathname !== target) {
+            try { await client.navigate(target); } catch { /* keep the existing page */ }
+          }
+          return client.focus();
+        }
+      }
+      return self.clients.openWindow(target);
+    })(),
+  );
 });
 
 const isStatic = (url) =>

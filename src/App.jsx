@@ -19,7 +19,7 @@ import {
   Clock, CloudOff, CreditCard, Download, FileText, FlaskConical, Heart, Home, Hospital, Info,
   LayoutGrid, LogIn, LogOut, Mail, MapPin, MessageSquare, Minus, Monitor, Package, PackagePlus,
   PhilippinePeso, Phone, Pill, Plus, Printer, QrCode, RefreshCw, Search, Send, Settings2, Share2,
-  ShieldCheck, Smartphone, Stethoscope, Syringe, Thermometer, Trash2, TrendingUp, User, UserPlus,
+  ShieldCheck, Smartphone, Stethoscope, Syringe, Thermometer, Trash2, TrendingUp, Upload, User, UserPlus,
   Users, Video, Wallet, Wifi, WifiOff, X, Zap,
 } from 'lucide-react';
 
@@ -631,6 +631,61 @@ const tempFlag = (t) => {
   return { tone: 'emerald', label: 'Afebrile' };
 };
 
+/* --- Clinic logo upload --------------------------------------------------------
+   The whole store is persisted as one JSON string in localStorage, so an uploaded
+   logo is rasterized through a canvas, scaled down and capped before it is stored.
+   Rasterizing also means an SVG (which can carry script) never reaches the DOM —
+   only raster types are accepted, and what we keep is canvas output, not the file. */
+const LOGO_MAX_PX = 480;
+const LOGO_MAX_CHARS = 300 * 1024;
+const LOGO_TYPES = ['image/png', 'image/jpeg', 'image/webp'];
+const LOGO_MAX_UPLOAD_BYTES = 5 * 1024 * 1024;
+
+async function processLogoFile(file) {
+  if (!file) throw new Error('No file chosen.');
+  if (!LOGO_TYPES.includes(file.type)) throw new Error('Use a PNG, JPEG or WebP image.');
+  if (file.size > LOGO_MAX_UPLOAD_BYTES) throw new Error('That image is larger than 5 MB.');
+
+  const dataUrl = await new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(new Error('That file could not be read.'));
+    reader.readAsDataURL(file);
+  });
+
+  const img = await new Promise((resolve, reject) => {
+    const el = new window.Image();
+    el.onload = () => resolve(el);
+    el.onerror = () => reject(new Error('That file is not a readable image.'));
+    el.src = dataUrl;
+  });
+
+  const scale = Math.min(1, LOGO_MAX_PX / Math.max(img.naturalWidth, img.naturalHeight));
+  const width = Math.max(1, Math.round(img.naturalWidth * scale));
+  const height = Math.max(1, Math.round(img.naturalHeight * scale));
+
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  canvas.getContext('2d').drawImage(img, 0, 0, width, height);
+
+  /* PNG first so a transparent background survives; JPEG only if it is too heavy. */
+  let out = canvas.toDataURL('image/png');
+  if (out.length > LOGO_MAX_CHARS) out = canvas.toDataURL('image/jpeg', 0.85);
+  if (out.length > LOGO_MAX_CHARS) {
+    throw new Error('That image is too detailed to store. Try a smaller or simpler one.');
+  }
+  return { dataUrl: out, width, height };
+}
+
+/* A doctor may hold clinic at several sites. One is marked primary: it supplies
+   the letterhead-adjacent details and the default fee for walk-ins. */
+const primaryLocation = (doctor) =>
+  (doctor?.locations ?? []).find((l) => l.primary) ?? doctor?.locations?.[0] ?? null;
+
+const locationById = (doctor, id) =>
+  (doctor?.locations ?? []).find((l) => l.id === id) ?? primaryLocation(doctor);
+
 const SENIOR_AGE = 60;
 const isSenior = (patient) => !!patient?.dob && ageFrom(patient.dob) >= SENIOR_AGE;
 
@@ -650,8 +705,22 @@ function buildSeed() {
     {
       id: 'D-0001', name: 'Maria Elena Santos', title: 'MD', dept: 'family',
       specialty: 'Family Medicine', prc: '0098221', ptr: '2411056', s2: '00-12-3456',
-      room: 'Consultation Room', fee: 500, days: 'Mon – Sat', hours: '9:00 AM – 5:00 PM',
       email: 'dr.santos@mediclinic.ph', mobile: '0917 100 2001', color: 'teal',
+      /* Where this doctor holds clinic. Add, edit and re-order from Settings. */
+      locations: [
+        {
+          id: 'L-0001', name: 'Katipunan (main)', primary: true,
+          address: '2F Sampaguita Bldg., 128 Katipunan Ave., Brgy. San Roque, Quezon City 1109',
+          phone: '(02) 8712-4455', room: 'Consultation Room',
+          days: 'Mon · Wed · Fri', hours: '9:00 AM – 5:00 PM', fee: 500,
+        },
+        {
+          id: 'L-0002', name: 'Commonwealth satellite', primary: false,
+          address: 'Ground Flr., Dela Rosa Bldg., 455 Commonwealth Ave., Brgy. Holy Spirit, Quezon City 1127',
+          phone: '(02) 8456-2210', room: 'Clinic 2',
+          days: 'Tue · Thu', hours: '1:00 PM – 6:00 PM', fee: 450,
+        },
+      ],
     },
   ];
 
@@ -1097,7 +1166,7 @@ function buildSeed() {
         : `Consultation — ${isFollowUp ? 'follow-up' : 'new patient'} (Dr. ${doctor.name.split(' ').pop()})`,
       kind: 'service',
       qty: 1,
-      unitPrice: enc.type === 'Teleconsult' ? 400 : isFollowUp ? 350 : doctor.fee,
+      unitPrice: enc.type === 'Teleconsult' ? 400 : isFollowUp ? 350 : primaryLocation(doctor)?.fee ?? 500,
     };
     const extras = (invoiceExtras[enc.id] ?? []).map((e, i) => ({ ...e, id: `IT-${enc.id}-X${i}` }));
     const drugs = enc.meds.map((m, i) => {
@@ -1137,54 +1206,63 @@ function buildSeed() {
     };
   });
 
-  /* Today's board. Minutes-ago anchoring keeps the demo live whenever it is opened. */
+  /* Today's board. Minutes-ago anchoring keeps the demo live whenever it is opened —
+     but a plain `now - 96min` lands on *yesterday* when the app is opened just after
+     midnight, and `isToday` would then hide most of the queue. Compress the spread so
+     the whole board always falls on today, preserving the order. */
+  const startOfToday = new Date();
+  startOfToday.setHours(0, 0, 0, 0);
+  const SEED_SPAN_MINS = 100;
+  const squeeze = Math.min(1, Math.max(0, ((Date.now() - startOfToday.getTime()) / 60000 - 2) / SEED_SPAN_MINS));
+  const seedAgo = (mins) => new Date(Date.now() - mins * 60000 * squeeze).toISOString();
+
   const queue = [
     {
       id: 'Q-0001', number: 1, patientId: 'P-0003', doctorId: 'D-0001', type: 'Walk-in',
       reason: 'Epigastric pain and acid reflux', priority: true, status: 'Completed',
-      checkedInAt: ago(96), startedAt: ago(74), completedAt: ago(52),
+      checkedInAt: seedAgo(96), startedAt: seedAgo(74), completedAt: seedAgo(52),
       vitals: { bp: '136/84', hr: 80, rr: 18, temp: 36.6, spo2: 98, weight: 75, height: 168 },
       encounterId: 'E-0014', invoiceId: 'INV-0014', draft: null,
     },
     {
       id: 'Q-0002', number: 2, patientId: 'P-0001', doctorId: 'D-0001', type: 'Appointment',
       reason: 'Hypertension follow-up', priority: false, status: 'In Consultation',
-      checkedInAt: ago(63), startedAt: ago(11), completedAt: '',
+      checkedInAt: seedAgo(63), startedAt: seedAgo(11), completedAt: '',
       vitals: { bp: '134/86', hr: 78, rr: 18, temp: 36.5, spo2: 98, weight: 81, height: 172 },
       encounterId: '', invoiceId: '', draft: null, appointmentId: 'A-0001',
     },
     {
       id: 'Q-0003', number: 3, patientId: 'P-0005', doctorId: 'D-0001', type: 'Walk-in',
       reason: 'Follow-up — rashes improving, now with dry cough', priority: false, status: 'Waiting',
-      checkedInAt: ago(47), startedAt: '', completedAt: '',
+      checkedInAt: seedAgo(47), startedAt: '', completedAt: '',
       vitals: { bp: '120/78', hr: 86, rr: 20, temp: 37.1, spo2: 97, weight: 58, height: 160 },
       encounterId: '', invoiceId: '', draft: null,
     },
     {
       id: 'Q-0004', number: 4, patientId: 'P-0008', doctorId: 'D-0001', type: 'Walk-in',
       reason: 'BP check and knee pain', priority: true, status: 'Waiting',
-      checkedInAt: ago(36), startedAt: '', completedAt: '',
+      checkedInAt: seedAgo(36), startedAt: '', completedAt: '',
       vitals: { bp: '148/90', hr: 74, rr: 18, temp: 36.4, spo2: 97, weight: 64, height: 152 },
       encounterId: '', invoiceId: '', draft: null,
     },
     {
       id: 'Q-0005', number: 5, patientId: 'P-0004', doctorId: 'D-0001', type: 'Appointment',
       reason: 'Fever since last night', priority: false, status: 'Waiting',
-      checkedInAt: ago(24), startedAt: '', completedAt: '',
+      checkedInAt: seedAgo(24), startedAt: '', completedAt: '',
       vitals: { bp: '', hr: 118, rr: 26, temp: 38.6, spo2: 98, weight: 19, height: 108 },
       encounterId: '', invoiceId: '', draft: null, appointmentId: 'A-0002',
     },
     {
       id: 'Q-0006', number: 6, patientId: 'P-0007', doctorId: 'D-0001', type: 'Walk-in',
       reason: 'Medical certificate for work clearance', priority: false, status: 'Waiting',
-      checkedInAt: ago(13), startedAt: '', completedAt: '',
+      checkedInAt: seedAgo(13), startedAt: '', completedAt: '',
       vitals: { bp: '118/76', hr: 80, rr: 18, temp: 36.6, spo2: 99, weight: 70, height: 173 },
       encounterId: '', invoiceId: '', draft: null,
     },
     {
       id: 'Q-0007', number: 7, patientId: 'P-0010', doctorId: 'D-0001', type: 'Walk-in',
       reason: 'Headache, 3rd episode this month', priority: false, status: 'Waiting',
-      checkedInAt: ago(4), startedAt: '', completedAt: '',
+      checkedInAt: seedAgo(4), startedAt: '', completedAt: '',
       vitals: { bp: '', hr: '', rr: '', temp: '', spo2: '', weight: '', height: '' },
       encounterId: '', invoiceId: '', draft: null,
     },
@@ -1192,17 +1270,17 @@ function buildSeed() {
 
   const appointments = [
     {
-      id: 'A-0001', patientId: 'P-0001', doctorId: 'D-0001', dept: 'family', date: ymd(),
+      id: 'A-0001', patientId: 'P-0001', doctorId: 'D-0001', dept: 'family', locationId: 'L-0001', date: ymd(),
       time: '09:30 AM', mode: 'In-clinic', complaint: 'Hypertension follow-up',
       status: 'Checked In', createdAt: ago(60 * 24 * 6), link: '',
     },
     {
-      id: 'A-0002', patientId: 'P-0004', doctorId: 'D-0001', dept: 'pedia', date: ymd(),
+      id: 'A-0002', patientId: 'P-0004', doctorId: 'D-0001', dept: 'pedia', locationId: 'L-0001', date: ymd(),
       time: '01:30 PM', mode: 'In-clinic', complaint: 'Fever since last night',
       status: 'Checked In', createdAt: ago(60 * 20), link: '',
     },
     {
-      id: 'A-0003', patientId: 'P-0006', doctorId: 'D-0001', dept: 'internal', date: ymd(),
+      id: 'A-0003', patientId: 'P-0006', doctorId: 'D-0001', dept: 'internal', locationId: 'L-0002', date: ymd(),
       time: '03:30 PM', mode: 'In-clinic', complaint: 'Repeat lipid profile review',
       status: 'Confirmed', createdAt: ago(60 * 24 * 3), link: '',
     },
@@ -1212,7 +1290,7 @@ function buildSeed() {
       status: 'Confirmed', createdAt: ago(60 * 24), link: 'https://meet.mediclinic.ph/room/a-0004',
     },
     {
-      id: 'A-0005', patientId: 'P-0003', doctorId: 'D-0001', dept: 'internal', date: inDays(14),
+      id: 'A-0005', patientId: 'P-0003', doctorId: 'D-0001', dept: 'internal', locationId: 'L-0001', date: inDays(14),
       time: '08:30 AM', mode: 'In-clinic', complaint: 'Gastritis follow-up and repeat FBS',
       status: 'Confirmed', createdAt: ago(30), link: '',
     },
@@ -1375,8 +1453,9 @@ function buildSeed() {
     passwordResetAt: '',
   }));
 
-  /* The letterhead every printed document shares, editable from Settings. */
-  const clinic = { ...CLINIC };
+  /* The letterhead every printed document shares, editable from Settings.
+     `logo` is empty until someone uploads one; the default mark is drawn instead. */
+  const clinic = { ...CLINIC, logo: '' };
 
   /* Prescription layout. The doctor owns this — see RxTemplateEditor. */
   const rxTemplate = {
@@ -1694,8 +1773,10 @@ function usePersistentStore() {
   useEffect(() => {
     try {
       localStorage.setItem(STORE_KEY, JSON.stringify(state));
-    } catch {
-      /* Quota or private mode — the app still works, it just won't survive a reload. */
+    } catch (err) {
+      /* Quota or private mode. The app keeps working in memory, but the write is
+         lost on reload — say so rather than failing silently. */
+      window.dispatchEvent(new CustomEvent('mc-persist-error', { detail: { message: String(err) } }));
     }
   }, [state]);
 
@@ -2057,9 +2138,7 @@ function Header() {
     <header className="no-print sticky top-0 z-30 border-b border-slate-200 bg-white/90 backdrop-blur">
       <div className="mx-auto flex max-w-7xl items-center gap-3 px-4 py-2.5">
         <div className="flex min-w-0 items-center gap-2.5">
-          <span className={cx('grid h-9 w-9 shrink-0 place-items-center rounded-lg text-white', theme.bg)}>
-            <Plus className="h-5 w-5" strokeWidth={3} />
-          </span>
+          <ClinicMark tone={theme.bg} />
           <div className="min-w-0 leading-tight">
             <div className="truncate text-sm font-bold text-slate-900">MediClinic</div>
             <div className="hidden truncate text-[11px] text-slate-500 sm:block">{state.clinic?.hours ?? CLINIC.hours}</div>
@@ -2248,9 +2327,7 @@ function LoginScreen({ users, onSignIn, lastResetNote }) {
       <div className="flex flex-1 items-center justify-center p-4">
         <div className="w-full max-w-sm">
           <div className="mb-5 flex flex-col items-center text-center">
-            <span className="mb-3 grid h-14 w-14 place-items-center rounded-2xl bg-teal-600 text-white shadow-sm">
-              <Plus className="h-8 w-8" strokeWidth={3} />
-            </span>
+            <ClinicMark size="h-14 w-14" rounded="rounded-2xl" icon="h-8 w-8" />
             <h1 className="text-xl font-bold text-slate-900">{clinic.name}</h1>
             <p className="text-xs text-slate-500">{clinic.tagline}</p>
           </div>
@@ -2904,6 +2981,20 @@ function AllergyBadges({ patient, className }) {
   );
 }
 
+/* The clinic's mark: the uploaded logo when there is one, else the default cross. */
+function ClinicMark({ size = 'h-9 w-9', rounded = 'rounded-lg', icon = 'h-5 w-5', tone = 'bg-teal-600' }) {
+  const { state } = useClinic();
+  const logo = state?.clinic?.logo;
+  if (logo) {
+    return <img src={logo} alt="" className={cx('shrink-0 bg-white object-contain', size, rounded)} />;
+  }
+  return (
+    <span className={cx('grid shrink-0 place-items-center text-white', size, rounded, tone)}>
+      <Plus className={icon} strokeWidth={3} />
+    </span>
+  );
+}
+
 function Avatar({ name, tone = 'bg-slate-200 text-slate-600', size = 'h-9 w-9 text-xs' }) {
   return (
     <span className={cx('grid shrink-0 place-items-center rounded-full font-bold', tone, size)}>
@@ -3112,6 +3203,8 @@ function NotificationBell() {
               );
             })}
           </div>
+
+          <DeviceNotificationSetting />
         </div>
       )}
     </div>
@@ -3545,6 +3638,195 @@ function FollowUpQueue() {
   );
 }
 
+
+/* ===== 5c. Device notifications ================================================= */
+
+/* Real system notifications, raised on the device by the page or its service
+   worker. NOT web push: there is no server and no VAPID subscription, so these
+   only fire while the app is open somewhere on that device — a backgrounded tab
+   or an installed PWA counts, a closed browser does not (CLAUDE.md gap 9).
+   On iOS the app must be installed to the Home Screen before this works at all. */
+const notificationsSupported = () => typeof window !== 'undefined' && 'Notification' in window;
+
+function useDeviceNotifications() {
+  const [permission, setPermission] = useState(() =>
+    notificationsSupported() ? Notification.permission : 'unsupported',
+  );
+
+  const request = useCallback(async () => {
+    if (!notificationsSupported()) return 'unsupported';
+    try {
+      const result = await Notification.requestPermission();
+      setPermission(result);
+      return result;
+    } catch {
+      return 'denied';
+    }
+  }, []);
+
+  /* Prefer the service worker: its notifications outlive the page and can be
+     clicked to bring the app back. Fall back to a page notification in dev. */
+  const notify = useCallback(
+    async ({ title, body, tag, url = '/', renotify = false }) => {
+      if (!notificationsSupported() || Notification.permission !== 'granted') return false;
+      const options = {
+        body,
+        tag,
+        renotify,
+        icon: '/icons/icon-192.png',
+        badge: '/icons/icon-192.png',
+        data: { url },
+      };
+      try {
+        if ('serviceWorker' in navigator) {
+          const reg = await navigator.serviceWorker.getRegistration();
+          if (reg) {
+            await reg.showNotification(title, options);
+            return true;
+          }
+        }
+        new Notification(title, options);
+        return true;
+      } catch {
+        return false;
+      }
+    },
+    [],
+  );
+
+  return { permission, request, notify, supported: notificationsSupported() };
+}
+
+/* Watches the store for things addressed to the signed-in user and raises one
+   device notification each. Everything already present when the hook mounts is
+   marked seen, so a reload never replays the backlog. */
+function DeviceNotifier() {
+  const { state, me, role, deviceNotifications: device, toast } = useClinic();
+  const seenReminders = useRef(null);
+  const seenMessages = useRef(null);
+
+  /* Follow-up reminders the clinic has actually sent. */
+  useEffect(() => {
+    const sent = (state.notifications ?? []).filter(
+      (n) => samePartyAs(n.to, me) && n.status === 'Sent',
+    );
+    if (seenReminders.current === null) {
+      seenReminders.current = new Set(sent.map((n) => n.id));
+      return;
+    }
+    for (const n of sent) {
+      if (seenReminders.current.has(n.id)) continue;
+      seenReminders.current.add(n.id);
+      const meta = NOTIFICATION_KINDS[n.kind] ?? NOTIFICATION_KINDS.message;
+      device.notify({
+        title: `${meta.label}: ${n.title}`,
+        body: n.dueDate ? `${n.body} (due ${fmtDate(n.dueDate)})` : n.body,
+        tag: `reminder-${n.id}`,
+      });
+      toast(`${n.title} — reminder received`, 'success');
+    }
+  }, [state.notifications, me, device, toast]);
+
+  /* Incoming messages — anything in my threads that someone else wrote. */
+  useEffect(() => {
+    const mine = threadsFor(state, me);
+    const incoming = mine.flatMap((t) =>
+      t.messages.filter((m) => !samePartyAs(m.from, me)).map((m) => ({ ...m, thread: t })),
+    );
+    if (seenMessages.current === null) {
+      seenMessages.current = new Set(incoming.map((m) => m.id));
+      return;
+    }
+    for (const m of incoming) {
+      if (seenMessages.current.has(m.id)) continue;
+      seenMessages.current.add(m.id);
+      const who = partyName(state, m.from);
+      device.notify({
+        title: `New message from ${who}`,
+        body: m.body.length > 120 ? `${m.body.slice(0, 117)}…` : m.body,
+        tag: `thread-${m.thread.id}`,
+        renotify: true,
+      });
+      toast(`New message from ${who}`, 'success');
+    }
+  }, [state.threads, state, me, device, toast]);
+
+  /* Rendered for its effects only. */
+  return null;
+}
+
+/* The enable/disable control, shown inside the notification bell. */
+function DeviceNotificationSetting() {
+  const { deviceNotifications: device, toast } = useClinic();
+  const { permission, request, notify, supported } = device;
+
+  if (!supported) {
+    return (
+      <p className="border-t border-slate-100 px-3 py-2 text-[11px] text-slate-500">
+        This browser cannot show device notifications.
+      </p>
+    );
+  }
+
+  if (permission === 'denied') {
+    return (
+      <p className="border-t border-slate-100 px-3 py-2 text-[11px] text-amber-700">
+        Notifications are blocked for this site. Allow them in your browser&apos;s site settings to get
+        follow-up reminders and messages on this device.
+      </p>
+    );
+  }
+
+  if (permission === 'granted') {
+    return (
+      <div className="flex items-center justify-between gap-2 border-t border-slate-100 px-3 py-2">
+        <span className="flex items-center gap-1.5 text-[11px] font-semibold text-emerald-700">
+          <BellRing className="h-3.5 w-3.5" /> Device notifications on
+        </span>
+        <button
+          type="button"
+          className="text-[11px] font-semibold text-slate-500 hover:text-slate-800"
+          onClick={async () => {
+            const shown = await notify({
+              title: 'MediClinic',
+              body: 'Notifications are working on this device.',
+              tag: 'test',
+              renotify: true,
+            });
+            toast(shown ? 'Test notification sent' : 'Could not show a notification', shown ? 'success' : 'error');
+          }}
+        >
+          Send a test
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={async () => {
+        const result = await request();
+        toast(
+          result === 'granted'
+            ? 'Device notifications enabled'
+            : 'Notifications were not allowed — you will still see reminders in the app.',
+          result === 'granted' ? 'success' : 'warn',
+        );
+      }}
+      className="flex w-full items-center gap-2 border-t border-slate-100 px-3 py-2.5 text-left transition hover:bg-slate-50"
+    >
+      <BellRing className="h-4 w-4 shrink-0 text-teal-600" />
+      <span>
+        <span className="block text-xs font-semibold text-slate-800">Turn on device notifications</span>
+        <span className="block text-[11px] text-slate-500">
+          Follow-up reminders and new messages pop up on this device.
+        </span>
+      </span>
+    </button>
+  );
+}
+
 /* ===== 6. Print Center & documents ============================================== */
 
 /* Every printable document renders through PrintCenter so it lands in #print-root,
@@ -3557,9 +3839,7 @@ function DocLetterhead({ docTitle, meta }) {
   return (
     <header className="avoid-break mb-5 border-b-2 border-slate-800 pb-3">
       <div className="flex items-start gap-3">
-        <span className="grid h-12 w-12 shrink-0 place-items-center rounded-lg bg-teal-700 text-white">
-          <Plus className="h-7 w-7" strokeWidth={3} />
-        </span>
+        <ClinicMark size="h-12 w-12" icon="h-7 w-7" tone="bg-teal-700" />
         <div className="flex-1">
           <h1 className="font-serif text-xl font-bold leading-tight text-slate-900">{clinic.name}</h1>
           <p className="text-[11px] text-slate-600">{clinic.tagline}</p>
@@ -4390,6 +4670,215 @@ const SAMPLE_RX_ENCOUNTER = {
   ],
 };
 
+/* Practice locations. A doctor may hold clinic at several sites; exactly one is
+   primary, which supplies the default room and fee for walk-ins. */
+function LocationsEditor({ doctor, onChange }) {
+  const { toast } = useClinic();
+  const locations = doctor?.locations ?? [];
+
+  const patch = (id, changes) =>
+    onChange(locations.map((l) => (l.id === id ? { ...l, ...changes } : l)));
+
+  const makePrimary = (id) =>
+    onChange(locations.map((l) => ({ ...l, primary: l.id === id })));
+
+  const add = () => {
+    const next = {
+      id: nextId('L', locations),
+      name: `Clinic ${locations.length + 1}`,
+      primary: locations.length === 0,
+      address: '',
+      phone: '',
+      room: '',
+      days: '',
+      hours: '',
+      fee: primaryLocation(doctor)?.fee ?? 500,
+    };
+    onChange([...locations, next]);
+  };
+
+  const remove = (loc) => {
+    if (locations.length === 1) {
+      toast('Keep at least one location — it supplies the room and fee.', 'warn');
+      return;
+    }
+    const rest = locations.filter((l) => l.id !== loc.id);
+    /* Never leave the set without a primary. */
+    if (loc.primary && rest.length) rest[0] = { ...rest[0], primary: true };
+    onChange(rest);
+    toast(`${loc.name || 'Location'} removed`, 'success');
+  };
+
+  return (
+    <section className="card">
+      <div className="card-head">
+        <h2 className="card-title">Clinic locations</h2>
+        <div className="flex items-center gap-2">
+          <Badge tone="bg-slate-100 text-slate-500">{locations.length}</Badge>
+          <button type="button" className="btn-ghost btn-sm" onClick={add}>
+            <Plus className="h-3.5 w-3.5" /> Add location
+          </button>
+        </div>
+      </div>
+
+      <div className="space-y-3 p-4">
+        {locations.length === 0 && (
+          <EmptyState icon={MapPin} title="No locations yet" hint="Add the clinic where you hold consultations." />
+        )}
+
+        {locations.map((loc) => (
+          <div
+            key={loc.id}
+            className={cx(
+              'rounded-xl border p-3',
+              loc.primary ? 'border-teal-300 bg-teal-50/40' : 'border-slate-200',
+            )}
+          >
+            <div className="mb-2.5 flex flex-wrap items-center gap-2">
+              <MapPin className={cx('h-4 w-4 shrink-0', loc.primary ? 'text-teal-600' : 'text-slate-400')} />
+              <input
+                className="input !w-auto min-w-0 flex-1 !py-1.5 text-sm font-semibold"
+                placeholder="Location name"
+                value={loc.name}
+                onChange={(e) => patch(loc.id, { name: e.target.value })}
+              />
+              {loc.primary ? (
+                <Badge tone="bg-teal-100 text-teal-800" icon={BadgeCheck}>Primary</Badge>
+              ) : (
+                <button type="button" className="btn-ghost btn-sm" onClick={() => makePrimary(loc.id)}>
+                  Make primary
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => remove(loc)}
+                className="rounded p-1 text-slate-400 transition hover:bg-rose-50 hover:text-rose-600"
+                aria-label={`Remove ${loc.name || 'location'}`}
+              >
+                <Trash2 className="h-4 w-4" />
+              </button>
+            </div>
+
+            <div className="grid gap-2.5 sm:grid-cols-2">
+              <Field label="Address" className="sm:col-span-2">
+                <textarea
+                  className="input min-h-[56px] resize-y"
+                  placeholder="Street, barangay, city"
+                  value={loc.address}
+                  onChange={(e) => patch(loc.id, { address: e.target.value })}
+                />
+              </Field>
+              <Field label="Telephone">
+                <input className="input nums" value={loc.phone ?? ''} onChange={(e) => patch(loc.id, { phone: e.target.value })} />
+              </Field>
+              <Field label="Room">
+                <input className="input" value={loc.room ?? ''} onChange={(e) => patch(loc.id, { room: e.target.value })} />
+              </Field>
+              <Field label="Clinic days">
+                <input className="input" placeholder="Mon · Wed · Fri" value={loc.days ?? ''} onChange={(e) => patch(loc.id, { days: e.target.value })} />
+              </Field>
+              <Field label="Clinic hours">
+                <input className="input" placeholder="9:00 AM – 5:00 PM" value={loc.hours ?? ''} onChange={(e) => patch(loc.id, { hours: e.target.value })} />
+              </Field>
+              <Field label="Consultation fee" className="sm:col-span-2">
+                <input
+                  type="number"
+                  min="0"
+                  className="input nums w-32"
+                  value={loc.fee ?? 0}
+                  onChange={(e) => patch(loc.id, { fee: Number(e.target.value) || 0 })}
+                />
+              </Field>
+            </div>
+          </div>
+        ))}
+
+        <p className="text-[11px] leading-snug text-slate-500">
+          Patients choose a location when they book. Walk-ins are billed at the primary location&apos;s fee.
+        </p>
+      </div>
+    </section>
+  );
+}
+
+/* Logo upload. The file never goes anywhere: it is drawn into a canvas, scaled,
+   re-encoded and the result stored on the clinic record. */
+function LogoUploader() {
+  const { state, act, toast } = useClinic();
+  const logo = state.clinic?.logo ?? '';
+  const [busy, setBusy] = useState(false);
+  const inputRef = useRef(null);
+
+  const pick = async (e) => {
+    const file = e.target.files?.[0];
+    /* Clear the input straight away so choosing the same file twice still fires. */
+    e.target.value = '';
+    if (!file) return;
+    setBusy(true);
+    try {
+      const { dataUrl, width, height } = await processLogoFile(file);
+      act({ type: 'UPDATE_CLINIC', patch: { logo: dataUrl } });
+      toast(`Logo updated · ${width}×${height}px`, 'success');
+    } catch (err) {
+      toast(err.message || 'That image could not be used.', 'error');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Field
+      label="Clinic logo"
+      hint={`PNG, JPEG or WebP up to 5 MB. Scaled to ${LOGO_MAX_PX}px and stored in this browser — it prints on every document.`}
+    >
+      <div className="flex flex-wrap items-center gap-3">
+        <span className="grid h-16 w-16 shrink-0 place-items-center overflow-hidden rounded-lg border border-slate-200 bg-white">
+          {logo ? (
+            <img src={logo} alt="Current clinic logo" className="h-full w-full object-contain" />
+          ) : (
+            <span className="grid h-10 w-10 place-items-center rounded-lg bg-teal-600 text-white">
+              <Plus className="h-6 w-6" strokeWidth={3} />
+            </span>
+          )}
+        </span>
+
+        <div className="flex flex-wrap gap-2">
+          <button
+            type="button"
+            className="btn-ghost btn-sm"
+            disabled={busy}
+            onClick={() => inputRef.current?.click()}
+          >
+            <Upload className="h-3.5 w-3.5" />
+            {busy ? 'Processing…' : logo ? 'Replace logo' : 'Upload logo'}
+          </button>
+          {logo && (
+            <button
+              type="button"
+              className="btn-ghost btn-sm"
+              disabled={busy}
+              onClick={() => {
+                act({ type: 'UPDATE_CLINIC', patch: { logo: '' } });
+                toast('Logo removed — back to the default mark', 'success');
+              }}
+            >
+              <Trash2 className="h-3.5 w-3.5" /> Remove
+            </button>
+          )}
+          <input
+            ref={inputRef}
+            type="file"
+            accept="image/png,image/jpeg,image/webp"
+            className="hidden"
+            onChange={pick}
+            aria-label="Upload clinic logo"
+          />
+        </div>
+      </div>
+    </Field>
+  );
+}
+
 /* Doctor-owned settings: the signature block, the shared letterhead and the
    prescription layout, with the real document rendering alongside. */
 function DoctorSettings() {
@@ -4480,27 +4969,12 @@ function DoctorSettings() {
                 <Field label="S2 licence no." hint="Required to prescribe dangerous drugs." className="sm:col-span-2">
                   <input className="input nums" value={doctor?.s2 ?? ''} onChange={(e) => setDoctor({ s2: e.target.value })} />
                 </Field>
-                <Field label="Clinic days">
-                  <input className="input" value={doctor?.days ?? ''} onChange={(e) => setDoctor({ days: e.target.value })} />
-                </Field>
-                <Field label="Clinic hours">
-                  <input className="input" value={doctor?.hours ?? ''} onChange={(e) => setDoctor({ hours: e.target.value })} />
-                </Field>
-                <Field label="Consultation fee">
-                  <input
-                    type="number"
-                    min="0"
-                    className="input nums"
-                    value={doctor?.fee ?? 0}
-                    onChange={(e) => setDoctor({ fee: Number(e.target.value) || 0 })}
-                  />
-                </Field>
-                <Field label="Room">
-                  <input className="input" value={doctor?.room ?? ''} onChange={(e) => setDoctor({ room: e.target.value })} />
-                </Field>
+
               </div>
             </section>
           )}
+
+          {tab === 'details' && <LocationsEditor doctor={doctor} onChange={(locations) => setDoctor({ locations })} />}
 
           {tab === 'template' && (
             <section className="card">
@@ -4590,6 +5064,7 @@ function DoctorSettings() {
                 <Badge tone="bg-amber-100 text-amber-800">shared by all documents</Badge>
               </div>
               <div className="grid gap-3 p-4">
+                <LogoUploader />
                 <Field label="Clinic name" required>
                   <input className="input" value={clinic.name} onChange={(e) => setClinic({ name: e.target.value })} />
                 </Field>
@@ -4749,7 +5224,9 @@ function DoctorOverview({ queue, waiting, onCallIn, onOpenChart }) {
         <div>
           <h1 className="text-xl font-bold text-slate-900">Good day, Dr. {doctor?.name.split(' ').slice(-1)}</h1>
           <p className="text-sm text-slate-500">
-            {doctor?.specialty} · {doctor?.room} · {doctor?.days}, {doctor?.hours}
+            {doctor?.specialty}
+            {primaryLocation(doctor) ? ` · ${primaryLocation(doctor).name} · ${primaryLocation(doctor).room}` : ''}
+            {(doctor?.locations?.length ?? 0) > 1 ? ` · +${doctor.locations.length - 1} other site${doctor.locations.length > 2 ? 's' : ''}` : ''}
           </p>
         </div>
         <Badge tone="bg-teal-50 text-teal-700 border border-teal-200" icon={Calendar}>
@@ -4974,7 +5451,7 @@ function ConsultationWorkspace({ item, waiting, onCallIn, onDone, onOpenChart })
           : `Consultation — ${isFollowUp ? 'follow-up' : 'new patient'} (Dr. ${doctor?.name.split(' ').pop()})`,
       kind: 'service',
       qty: 1,
-      unitPrice: item.type === 'Teleconsult' ? 400 : isFollowUp ? 350 : doctor?.fee ?? 500,
+      unitPrice: item.type === 'Teleconsult' ? 400 : isFollowUp ? 350 : primaryLocation(doctor)?.fee ?? 500,
     };
     const drugItems = draft.meds.map((m, i) => {
       const stockItem = findBy(state.inventory, m.itemId);
@@ -5962,10 +6439,21 @@ function PatientDashboard({ patient, onBook }) {
               <p className="text-sm font-semibold text-slate-900">
                 {fmtLongDate(nextAppt.date)} · <span className="nums">{nextAppt.time}</span>
               </p>
-              <p className="text-xs text-slate-600">
-                {doctorName(findBy(state.doctors, nextAppt.doctorId))} ·{' '}
-                {DEPARTMENTS.find((d) => d.id === nextAppt.dept)?.label}
-              </p>
+              <p className="text-xs text-slate-600">{doctorName(findBy(state.doctors, nextAppt.doctorId))}</p>
+              {nextAppt.mode !== 'Teleconsult' && locationById(findBy(state.doctors, nextAppt.doctorId), nextAppt.locationId) && (
+                <p className="mt-0.5 flex items-start gap-1 text-xs text-slate-500">
+                  <MapPin className="mt-0.5 h-3 w-3 shrink-0 text-slate-400" />
+                  <span>
+                    <span className="font-medium text-slate-700">
+                      {locationById(findBy(state.doctors, nextAppt.doctorId), nextAppt.locationId).name}
+                    </span>
+                    {/* A location added but not yet addressed shouldn't trail a dash. */}
+                    {locationById(findBy(state.doctors, nextAppt.doctorId), nextAppt.locationId).address
+                      ? ` — ${locationById(findBy(state.doctors, nextAppt.doctorId), nextAppt.locationId).address}`
+                      : ''}
+                  </span>
+                </p>
+              )}
               <p className="mt-1 text-xs text-slate-500">{nextAppt.complaint}</p>
               <div className="mt-3 flex items-center gap-2">
                 <StatusBadge status={nextAppt.status} />
@@ -6051,6 +6539,9 @@ function BookAppointment({ patient, onBooked }) {
   const doctor = state.doctors[0];
   const doctorId = doctor?.id ?? '';
   const dept = doctor?.dept ?? '';
+  const locations = doctor?.locations ?? [];
+  const [locationId, setLocationId] = useState(() => primaryLocation(doctor)?.id ?? '');
+  const location = locationById(doctor, locationId);
   const [date, setDate] = useState('');
   const [time, setTime] = useState('');
   const [mode, setMode] = useState('In-clinic');
@@ -6066,7 +6557,7 @@ function BookAppointment({ patient, onBooked }) {
     [state.appointments, doctorId, date],
   );
 
-  const ready = !!(doctorId && date && time && complaint.trim());
+  const ready = !!(doctorId && (locations.length === 0 || locationId) && date && time && complaint.trim());
 
   const book = () => {
     if (!ready) {
@@ -6078,6 +6569,7 @@ function BookAppointment({ patient, onBooked }) {
       patientId: patient.id,
       doctorId,
       dept,
+      locationId: mode === 'Teleconsult' ? '' : locationId,
       date,
       time,
       mode,
@@ -6087,14 +6579,19 @@ function BookAppointment({ patient, onBooked }) {
       link: mode === 'Teleconsult' ? `https://meet.mediclinic.ph/room/${Date.now().toString(36)}` : '',
     };
     act({ type: 'ADD_APPOINTMENT', appointment });
-    toast(`Booked: ${fmtDate(date)} at ${time} with ${doctorName(doctor)}`, 'success');
+    toast(
+      `Booked: ${fmtDate(date)} at ${time} with ${doctorName(doctor)}` +
+        (mode === 'Teleconsult' ? ' (teleconsult)' : location ? ` · ${location.name}` : ''),
+      'success',
+    );
     onBooked();
   };
 
   const steps = [
+    ...(locations.length > 1 ? [{ n: 0, label: 'Location', done: !!locationId }] : []),
     { n: 1, label: 'Date & time', done: !!(date && time) },
     { n: 2, label: 'Visit details', done: !!complaint.trim() },
-  ];
+  ].map((s, i) => ({ ...s, n: i + 1 }));
 
   return (
     <div className="space-y-4">
@@ -6124,10 +6621,40 @@ function BookAppointment({ patient, onBooked }) {
           <div className="min-w-0 flex-1">
             <p className="text-sm font-bold text-slate-900">{doctorName(doctor)}{doctor?.title ? `, ${doctor.title}` : ''}</p>
             <p className="text-xs text-slate-600">{doctor?.specialty}</p>
-            <p className="text-[11px] text-slate-400">{doctor?.days} · {doctor?.hours}</p>
+            <p className="text-[11px] text-slate-400">{location?.days} · {location?.hours}</p>
           </div>
-          <span className="nums text-sm font-semibold text-slate-600">{peso(doctor?.fee ?? 0)}</span>
+          <span className="nums text-sm font-semibold text-slate-600">{peso(location?.fee ?? 0)}</span>
         </div>
+
+        {locations.length > 1 && (
+          <div className="mt-3 border-t border-slate-100 pt-3">
+            <p className="label">Where would you like to be seen?</p>
+            <div className="grid gap-2 sm:grid-cols-2">
+              {locations.map((loc) => (
+                <button
+                  key={loc.id}
+                  type="button"
+                  onClick={() => { setLocationId(loc.id); setTime(''); }}
+                  className={cx(
+                    'rounded-lg border px-3 py-2.5 text-left transition',
+                    locationId === loc.id
+                      ? 'border-indigo-500 bg-indigo-50'
+                      : 'border-slate-200 hover:border-slate-300 hover:bg-slate-50',
+                  )}
+                >
+                  <span className="flex items-center gap-1.5">
+                    <MapPin className="h-3.5 w-3.5 shrink-0 text-slate-400" />
+                    <span className="truncate text-sm font-semibold text-slate-900">{loc.name}</span>
+                  </span>
+                  <span className="mt-0.5 block text-[11px] leading-snug text-slate-500">{loc.address}</span>
+                  <span className="mt-0.5 block text-[11px] text-slate-400">
+                    {loc.days} · {loc.hours} · {peso(loc.fee)}
+                  </span>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
       </section>
 
       <section className="card card-pad">
@@ -6216,7 +6743,8 @@ function BookAppointment({ patient, onBooked }) {
                 {doctorName(doctor)} · {fmtDate(date)} at {time}
               </p>
               <p>
-                {mode} · estimated {peso(mode === 'Teleconsult' ? 400 : doctor?.fee ?? 500)} consultation fee
+                {mode === 'Teleconsult' ? 'Teleconsult' : location?.name ?? 'In-clinic'} · estimated{' '}
+                {peso(mode === 'Teleconsult' ? 400 : location?.fee ?? 500)} consultation fee
               </p>
               <p className="mt-0.5 text-slate-400">SMS reminders are simulated in this demo.</p>
             </div>
@@ -6529,7 +7057,7 @@ function ReceptionQueue({ onOpenChart, checkInFor, setCheckInFor }) {
                 </p>
                 <p className="truncate text-xs text-slate-500">
                   {doctorName(servingDoctor)}
-                  {servingDoctor?.room ? ` · ${servingDoctor.room}` : ''}
+                  {primaryLocation(servingDoctor)?.room ? ` · ${primaryLocation(servingDoctor).room}` : ''}
                   {nowServing.startedAt ? ` · in consultation ${fmtDuration(minsSince(nowServing.startedAt))}` : ''}
                 </p>
               </>
@@ -8057,6 +8585,7 @@ export default function App() {
   const swState = useServiceWorkerState();
 
   const { session, signIn, signOut } = useSession();
+  const deviceNotifications = useDeviceNotifications();
   const [toasts, setToasts] = useState([]);
   const [printJob, setPrintJob] = useState(null);
   const [outbox, setOutbox] = useState(0);
@@ -8087,6 +8616,18 @@ export default function App() {
     }, 1200);
     return () => clearTimeout(t);
   }, [network.online, outbox, toast]);
+
+  /* A refused localStorage write means the change is memory-only — say so once. */
+  const warnedRef = useRef(false);
+  useEffect(() => {
+    const onFail = () => {
+      if (warnedRef.current) return;
+      warnedRef.current = true;
+      toast('This browser refused to save — recent changes will be lost on reload. A smaller logo may help.', 'error');
+    };
+    window.addEventListener('mc-persist-error', onFail);
+    return () => window.removeEventListener('mc-persist-error', onFail);
+  }, [toast]);
 
   const resetDemo = useCallback(() => {
     dispatch({ type: 'RESET', state: buildSeed() });
@@ -8138,6 +8679,7 @@ export default function App() {
       me: { kind: role, id: role === 'doctor' ? doctorId : role === 'patient' ? patientId : staffId },
       toast,
       openPrint,
+      deviceNotifications,
       outbox,
       swState,
       resetDemo,
@@ -8146,7 +8688,8 @@ export default function App() {
       simulatedOffline: network.simulatedOffline,
       setSimulatedOffline: network.setSimulatedOffline,
     }),
-    [state, act, role, doctorId, patientId, staffId, currentUser, signOut, toast, openPrint, outbox, swState, resetDemo, network],
+    [state, act, role, doctorId, patientId, staffId, currentUser, signOut, toast, openPrint,
+     deviceNotifications, outbox, swState, resetDemo, network],
   );
 
   /* Every hook above runs unconditionally; the gate comes after them. */
@@ -8170,6 +8713,9 @@ export default function App() {
             Offline — changes are saved on this device and will sync when the connection returns.
           </div>
         )}
+
+        {/* Raises a device notification for anything new addressed to this user. */}
+        <DeviceNotifier />
 
         {role === 'doctor' && <DoctorPortal />}
         {role === 'patient' && <PatientPortal />}

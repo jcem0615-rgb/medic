@@ -35,6 +35,9 @@ src/App.jsx                Whole app — sections marked `// ===== N.`
 4b. **Authentication** — `useSession` (localStorage when "remember me" is ticked, sessionStorage otherwise),
     `LoginScreen`, `ForcePasswordChange`, `AccountsPanel`. See **Accounts** below.
 5. **UI primitives** — Badge/StatusBadge, SlideOver, Modal, StatCard, FakeQR, VitalsStrip, AllergyBadges, HourlyBars.
+5c. **Device notifications** — `useDeviceNotifications` (permission + `notify`), `DeviceNotifier` (watches
+    the store and raises one notification per new item), `DeviceNotificationSetting` (inside the bell).
+    These are local notifications, not web push: see **Device notifications** below.
 5b. **Messaging & notifications** — `MESSAGING_RULES` + `canMessage`, `threadsFor`/`unreadThreadCount`/`notificationsFor`/`dueReminders`, `NotificationBell` (header), `MessagesPanel` (shared inbox for all three portals), `PatientReminders`, `FollowUpQueue`.
 6. **Print Center & documents** — `PrintCenter` renders a preview in a modal *and* portals a clean copy into `#print-root`; `@media print` hides `#root` and shows only `#print-root`, so multi-page docs paginate correctly. Documents: `MedicalCertificateDoc` (kind = certificate | abstract), `PrescriptionDoc`, `ReceiptDoc`.
    Also `PatientChart` (shared slide-over used by Doctor records and Staff directory; role-gated actions) and `EncounterCard`.
@@ -74,6 +77,18 @@ role switcher is gone; the login screen lists demo accounts instead.
 limiting and no server to enforce any of it — a user can edit their own role in devtools. It is a
 faithful *interface* for auth, standing in until Supabase Auth + RLS (gap 1).
 
+## Device notifications
+Sent follow-up reminders and incoming messages raise a real system notification through
+`registration.showNotification()`, and `sw.js` handles `notificationclick` to focus the app. The permission
+is requested from the bell popover, which also offers a test notification.
+
+**This is not web push.** There is no server and no VAPID subscription, so a notification can only be
+raised while the app is running on that device — a backgrounded tab or an installed PWA counts, a closed
+browser does not. Cross-device delivery (the real "notify the patient's phone") needs a push service;
+until then, the cross-tab `storage` event is what carries a reminder sent by the front desk to a patient
+tab open on the same machine. On iOS the app must be installed to the Home Screen first.
+`DeviceNotifier` marks everything present at mount as seen, so a reload never replays the backlog.
+
 ## Messaging policy (don't loosen this by accident)
 `MESSAGING_RULES` is the single source of truth: **doctor↔patient** and **doctor↔staff** are allowed,
 **patient↔staff is not**. Clinical questions go patient→doctor; anything the front desk needs a patient to
@@ -81,12 +96,29 @@ know goes through the attending doctor or the phone. The rule is enforced in two
 recipient list is built from it, *and* `SEND_MESSAGE` re-checks it in the reducer, so a hand-crafted
 dispatch can't create a forbidden thread. Threads are two-party only.
 
+## Clinic locations
+A doctor may hold clinic at several sites. `doctor.locations[]` carries name, address, phone, room, days,
+hours and fee, with exactly one `primary` — `primaryLocation()` supplies the room shown on the board and
+the fee charged to walk-ins, `locationById()` resolves an appointment's site. Patients pick a location
+when booking (the step only appears when there is more than one) and the appointment stores `locationId`;
+teleconsults store none. Removing the primary promotes another, and the last location cannot be removed.
+**Not yet per-site:** the queue, encounters and invoices have no location — a real multi-site build would
+need the front desk to choose which clinic it is running.
+
 ## One doctor
 The clinic has a single practitioner. Booking skips department and doctor and starts at the calendar,
 check-in shows the attending doctor instead of a picker, and the reception board is one panel rather than
 one column per room. `state.doctors` is still an array and `doctorId` still travels on encounters, queue
 items and invoices, so adding a second doctor later is additive — but the UI assumes one and would need
 the pickers back.
+
+## Clinic logo
+`clinic.logo` holds a data URL. Uploads go through `processLogoFile`: raster types only (PNG/JPEG/WebP,
+max 5 MB), redrawn through a canvas at `LOGO_MAX_PX`, re-encoded (PNG, falling back to JPEG) and rejected
+above `LOGO_MAX_CHARS` — the whole store is one localStorage string, so an unbounded image would break
+persistence. Rasterizing also means an uploaded SVG could never reach the DOM. `ClinicMark` draws the logo
+wherever the clinic is identified (documents, header, login) and falls back to the default cross.
+A refused localStorage write now emits `mc-persist-error`, which the app surfaces once as a toast.
 
 ## Formulary
 108 stocked items across ~81 generics. A generic may have several variants (strength + form): Paracetamol
@@ -126,6 +158,8 @@ tube, vial, amp, pc, respule, sachet) suggest a quantity of 1 instead of `autoQt
 6. Data Privacy Act consent + audit log.
 
 ## Gotchas
+- `buildSeed()` compresses the queue's minutes-ago spread (`seedAgo`) so opening the app just after
+  midnight doesn't anchor the board on *yesterday*, where `isToday` would hide it.
 - Persisted state from an older day keeps old timestamps; the Overview only counts *today*. Use **Online badge → Reset demo** to reseed.
 - Bump `SCHEMA_VERSION` whenever the state shape changes (old localStorage is discarded automatically).
 - The SW is only registered in production builds; test PWA install/offline with `npm run build && npm run preview`.
