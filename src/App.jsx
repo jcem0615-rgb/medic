@@ -27,7 +27,7 @@ import {
 
 const STORE_KEY = 'mediclinic:v1';
 /* Bump whenever the state shape changes — older persisted state is discarded. */
-const SCHEMA_VERSION = 6;
+const SCHEMA_VERSION = 7;
 
 const CLINIC = {
   name: 'MediClinic Family Health Center',
@@ -98,6 +98,7 @@ const DEPARTMENTS = [
 const DEFAULT_PASSWORD = '123456';
 const SESSION_KEY = 'mediclinic:session';
 const MIN_PASSWORD_LENGTH = 6;
+const PASSWORD_ITERATIONS = 120000;
 
 /* Phone numbers are typed every which way, so compare them digits-only. */
 const normalizeIdentifier = (value = '') => {
@@ -110,6 +111,56 @@ const matchesIdentifier = (user, identifier) => {
   if (!id) return false;
   return normalizeIdentifier(user.email) === id || normalizeIdentifier(user.mobile) === id;
 };
+
+/* --- Passwords -----------------------------------------------------------------
+   Chosen passwords are never stored, only a PBKDF2-SHA256 hash with a per-user
+   salt. An account with no hash is still on DEFAULT_PASSWORD, which is how a new
+   or reset account is represented — so the default never has to be written down
+   either. This does NOT make the app secure (see CLAUDE.md gap 1): anyone with
+   the device can still edit the store. What it does buy is that reading
+   localStorage never hands over a password someone may have reused elsewhere. */
+const bytesToHex = (bytes) => [...bytes].map((b) => b.toString(16).padStart(2, '0')).join('');
+const hexToBytes = (hex) =>
+  new Uint8Array((hex.match(/.{1,2}/g) ?? []).map((pair) => parseInt(pair, 16)));
+
+const subtleCrypto = () =>
+  typeof crypto !== 'undefined' && crypto.subtle ? crypto.subtle : null;
+
+async function hashPassword(password, saltHex) {
+  const subtle = subtleCrypto();
+  if (!subtle) {
+    /* Only reachable over plain http on a non-localhost origin. */
+    throw new Error('This browser cannot hash passwords here — open the app over HTTPS.');
+  }
+  const key = await subtle.importKey('raw', new TextEncoder().encode(password), 'PBKDF2', false, [
+    'deriveBits',
+  ]);
+  const bits = await subtle.deriveBits(
+    { name: 'PBKDF2', salt: hexToBytes(saltHex), iterations: PASSWORD_ITERATIONS, hash: 'SHA-256' },
+    key,
+    256,
+  );
+  return bytesToHex(new Uint8Array(bits));
+}
+
+async function makePasswordRecord(password) {
+  const salt = bytesToHex(crypto.getRandomValues(new Uint8Array(16)));
+  return { passwordSalt: salt, passwordHash: await hashPassword(password, salt) };
+}
+
+/* True when the account has never had a password set, or was reset. */
+const isOnDefaultPassword = (user) => !user?.passwordHash;
+
+async function verifyPassword(user, input) {
+  if (isOnDefaultPassword(user)) return input === DEFAULT_PASSWORD;
+  try {
+    const attempt = await hashPassword(input, user.passwordSalt);
+    /* Both sides are our own hex of the same length; a plain compare is fine. */
+    return attempt === user.passwordHash;
+  } catch {
+    return false;
+  }
+}
 
 /* --- Messaging policy ----------------------------------------------------------
    Who may open a thread with whom. Patients and front-desk staff deliberately have
@@ -1447,7 +1498,7 @@ function buildSeed() {
   ].map((u, i) => ({
     ...u,
     id: `U-${String(i + 1).padStart(4, '0')}`,
-    password: DEFAULT_PASSWORD,
+    /* No passwordHash: the account is on the default until its owner sets one. */
     mustChangePassword: true,
     lastLoginAt: '',
     passwordResetAt: '',
@@ -1508,7 +1559,13 @@ function reducer(state, action) {
         ...state,
         users: state.users.map((u) =>
           u.id === action.id
-            ? { ...u, password: action.password, mustChangePassword: false, passwordResetAt: '' }
+            ? {
+                ...u,
+                passwordHash: action.passwordHash,
+                passwordSalt: action.passwordSalt,
+                mustChangePassword: false,
+                passwordResetAt: '',
+              }
             : u,
         ),
       };
@@ -1522,7 +1579,8 @@ function reducer(state, action) {
           u.id === action.id
             ? {
                 ...u,
-                password: DEFAULT_PASSWORD,
+                passwordHash: '',
+                passwordSalt: '',
                 mustChangePassword: true,
                 passwordResetAt: action.at,
                 resetBy: action.by ?? '',
@@ -1548,6 +1606,14 @@ function reducer(state, action) {
       return {
         ...state,
         doctors: state.doctors.map((d) => (d.id === action.id ? { ...d, ...action.patch } : d)),
+      };
+
+    /* Only ever dispatched from the doctor's Accounts panel. */
+    case 'ADD_STAFF':
+      return {
+        ...state,
+        staff: [...state.staff, action.staff],
+        users: [...state.users, action.user],
       };
 
     case 'ADD_PATIENT':
@@ -1804,8 +1870,29 @@ function usePersistentStore() {
         /* ignore malformed payloads from another tab */
       }
     };
+    /* A storage event can be missed — a throttled background tab, a tab opened
+       while another was mid-write. Re-read whenever this tab comes back to the
+       foreground so every portal converges without a manual refresh. */
+    const resync = () => {
+      if (document.visibilityState === 'hidden') return;
+      try {
+        const raw = localStorage.getItem(STORE_KEY);
+        if (!raw) return;
+        const next = JSON.parse(raw);
+        if (next?.schemaVersion === SCHEMA_VERSION) dispatch({ type: 'HYDRATE', state: next });
+      } catch {
+        /* keep what we have */
+      }
+    };
+
     window.addEventListener('storage', onStorage);
-    return () => window.removeEventListener('storage', onStorage);
+    window.addEventListener('focus', resync);
+    document.addEventListener('visibilitychange', resync);
+    return () => {
+      window.removeEventListener('storage', onStorage);
+      window.removeEventListener('focus', resync);
+      document.removeEventListener('visibilitychange', resync);
+    };
   }, []);
 
   return [state, dispatch];
@@ -2317,16 +2404,31 @@ function LoginScreen({ users, onSignIn, lastResetNote }) {
   const [forgotOpen, setForgotOpen] = useState(false);
   const [showDemo, setShowDemo] = useState(false);
 
-  const submit = (e) => {
+  const [checking, setChecking] = useState(false);
+
+  const submit = async (e) => {
     e?.preventDefault();
-    const user = users.find((u) => matchesIdentifier(u, identifier));
-    if (!user || user.password !== password) {
-      /* Don't say which half was wrong. */
-      setError('We could not match that e-mail or mobile number and password.');
-      return;
+    if (checking) return;
+    setChecking(true);
+    try {
+      const user = users.find((u) => matchesIdentifier(u, identifier));
+      /* Hash even when no account matched, so a wrong username and a wrong
+         password take the same time and cannot be told apart by timing. */
+      const probeSalt = user?.passwordSalt || '00';
+      const okPassword = user
+        ? await verifyPassword(user, password)
+        : (await hashPassword(password, probeSalt), false);
+      if (!user || !okPassword) {
+        setError('We could not match that e-mail or mobile number and password.');
+        return;
+      }
+      setError('');
+      onSignIn(user, remember);
+    } catch (err) {
+      setError(err.message || 'Sign-in failed on this browser.');
+    } finally {
+      setChecking(false);
     }
-    setError('');
-    onSignIn(user, remember);
   };
 
   const demoAccounts = [
@@ -2404,8 +2506,8 @@ function LoginScreen({ users, onSignIn, lastResetNote }) {
               </button>
             </div>
 
-            <button type="submit" className="btn-primary w-full py-2.5">
-              <LogIn className="h-4 w-4" /> Sign in
+            <button type="submit" className="btn-primary w-full py-2.5" disabled={checking}>
+              <LogIn className="h-4 w-4" /> {checking ? 'Checking…' : 'Sign in'}
             </button>
 
             <p className="text-center text-[11px] leading-snug text-slate-400">
@@ -2433,7 +2535,7 @@ function LoginScreen({ users, onSignIn, lastResetNote }) {
                       className="min-w-0 flex-1 truncate text-left text-xs text-slate-600 hover:text-slate-900"
                       onClick={() => {
                         setIdentifier(row.user.email);
-                        setPassword(row.user.password === DEFAULT_PASSWORD ? DEFAULT_PASSWORD : '');
+                        setPassword(isOnDefaultPassword(row.user) ? DEFAULT_PASSWORD : '');
                         setError('');
                       }}
                     >
@@ -2491,8 +2593,11 @@ function ForcePasswordChange({ user, onChange, onSignOut, wasReset }) {
   const [confirm, setConfirm] = useState('');
   const [error, setError] = useState('');
 
-  const submit = (e) => {
+  const [saving, setSaving] = useState(false);
+
+  const submit = async (e) => {
     e?.preventDefault();
+    if (saving) return;
     if (next.length < MIN_PASSWORD_LENGTH) {
       setError(`Use at least ${MIN_PASSWORD_LENGTH} characters.`);
       return;
@@ -2505,7 +2610,14 @@ function ForcePasswordChange({ user, onChange, onSignOut, wasReset }) {
       setError('The two passwords do not match.');
       return;
     }
-    onChange(next);
+    setSaving(true);
+    try {
+      await onChange(next);
+    } catch (err) {
+      setError(err.message || 'That password could not be saved.');
+    } finally {
+      setSaving(false);
+    }
   };
 
   return (
@@ -2553,8 +2665,8 @@ function ForcePasswordChange({ user, onChange, onSignOut, wasReset }) {
             </p>
           )}
 
-          <button type="submit" className="btn-primary w-full py-2.5">
-            <CheckCircle2 className="h-4 w-4" /> Save and continue
+          <button type="submit" className="btn-primary w-full py-2.5" disabled={saving}>
+            <CheckCircle2 className="h-4 w-4" /> {saving ? 'Saving…' : 'Save and continue'}
           </button>
           <button type="button" onClick={onSignOut} className="btn-ghost btn-sm w-full">
             Sign out instead
@@ -2570,10 +2682,57 @@ function ForcePasswordChange({ user, onChange, onSignOut, wasReset }) {
 }
 
 /* Account list with the reset action. Doctor and staff both get this. */
+const emptyStaffForm = { name: '', role: 'Receptionist', desk: '', email: '', mobile: '' };
+
 function AccountsPanel({ accent = 'teal' }) {
-  const { state, act, toast, me } = useClinic();
+  const { state, act, toast, me, role } = useClinic();
   const [query, setQuery] = useState('');
   const [confirming, setConfirming] = useState(null);
+  /* Hiring is the doctor's call — the front desk can reset, not create. */
+  const canAddStaff = role === 'doctor';
+  const [addingStaff, setAddingStaff] = useState(false);
+  const [staffForm, setStaffForm] = useState(emptyStaffForm);
+  const [createdStaff, setCreatedStaff] = useState(null);
+
+  const submitStaff = () => {
+    const name = staffForm.name.trim();
+    const email = staffForm.email.trim();
+    const mobile = staffForm.mobile.trim();
+    if (!name || !mobile) {
+      toast('Name and mobile number are required.', 'warn');
+      return;
+    }
+    const clash = state.users.find(
+      (u) => matchesIdentifier(u, mobile) || (email && matchesIdentifier(u, email)),
+    );
+    if (clash) {
+      toast(`That mobile number or e-mail already signs in as ${clash.name}.`, 'error');
+      return;
+    }
+    const staff = {
+      id: nextId('S', state.staff),
+      name,
+      role: staffForm.role,
+      desk: staffForm.desk.trim() || staffForm.role,
+      email,
+      mobile,
+    };
+    const user = {
+      id: nextId('U', state.users),
+      kind: 'staff',
+      refId: staff.id,
+      name,
+      email,
+      mobile,
+      mustChangePassword: true,
+      lastLoginAt: '',
+      passwordResetAt: '',
+    };
+    act({ type: 'ADD_STAFF', staff, user });
+    setCreatedStaff({ staff, user });
+    setAddingStaff(false);
+    setStaffForm(emptyStaffForm);
+  };
 
   const q = query.trim().toLowerCase();
   const users = useMemo(() => {
@@ -2590,7 +2749,12 @@ function AccountsPanel({ accent = 'teal' }) {
     );
   }, [state.users, q]);
 
-  const pending = state.users.filter((u) => u.mustChangePassword).length;
+  const pending = state.users.filter((u) => u.mustChangePassword || isOnDefaultPassword(u)).length;
+
+  /* Clinic staff and the doctor only — this lists everyone's contact details. */
+  if (role === 'patient') {
+    return <EmptyState icon={ShieldCheck} title="Not available" hint="Account administration is clinic-side." />;
+  }
 
   const reset = (user) => {
     act({ type: 'RESET_PASSWORD', id: user.id, at: new Date().toISOString(), by: partyKey(me) });
@@ -2609,9 +2773,16 @@ function AccountsPanel({ accent = 'teal' }) {
             change it on their next sign-in.
           </p>
         </div>
-        <Badge tone={pending ? 'bg-amber-100 text-amber-800' : 'bg-slate-100 text-slate-500'}>
-          {pending} awaiting first change
-        </Badge>
+        <div className="flex items-center gap-2">
+          <Badge tone={pending ? 'bg-amber-100 text-amber-800' : 'bg-slate-100 text-slate-500'}>
+            {pending} awaiting first change
+          </Badge>
+          {canAddStaff && (
+            <button type="button" className="btn-primary btn-sm" onClick={() => setAddingStaff(true)}>
+              <UserPlus className="h-3.5 w-3.5" /> Add staff
+            </button>
+          )}
+        </div>
       </div>
 
       <div className="card card-pad">
@@ -2680,6 +2851,80 @@ function AccountsPanel({ accent = 'teal' }) {
           </table>
         </div>
       </div>
+
+      <Modal
+        open={addingStaff}
+        onClose={() => setAddingStaff(false)}
+        title="Add a staff member"
+        subtitle="Creates their clinic account at the same time"
+        footer={
+          <div className="flex justify-end gap-2">
+            <button type="button" className="btn-ghost btn-sm" onClick={() => setAddingStaff(false)}>Cancel</button>
+            <button type="button" className="btn-primary btn-sm" onClick={submitStaff}>
+              <UserPlus className="h-3.5 w-3.5" /> Create account
+            </button>
+          </div>
+        }
+      >
+        <div className="grid gap-3 p-5 sm:grid-cols-2">
+          <Field label="Full name" required className="sm:col-span-2">
+            <input className="input" value={staffForm.name} onChange={(e) => setStaffForm((f) => ({ ...f, name: e.target.value }))} />
+          </Field>
+          <Field label="Role">
+            <select className="input" value={staffForm.role} onChange={(e) => setStaffForm((f) => ({ ...f, role: e.target.value }))}>
+              {['Receptionist', 'Pharmacy assistant', 'Billing clerk', 'Nurse', 'Clinic aide'].map((r) => (
+                <option key={r}>{r}</option>
+              ))}
+            </select>
+          </Field>
+          <Field label="Desk" hint="Where they sit — shown on the board.">
+            <input className="input" placeholder="Front desk" value={staffForm.desk} onChange={(e) => setStaffForm((f) => ({ ...f, desk: e.target.value }))} />
+          </Field>
+          <Field label="Mobile number" required hint="Doubles as their username.">
+            <input className="input nums" placeholder="0917 000 0000" value={staffForm.mobile} onChange={(e) => setStaffForm((f) => ({ ...f, mobile: e.target.value }))} />
+          </Field>
+          <Field label="E-mail">
+            <input type="email" className="input" value={staffForm.email} onChange={(e) => setStaffForm((f) => ({ ...f, email: e.target.value }))} />
+          </Field>
+          <p className="sm:col-span-2 rounded-lg bg-slate-50 px-3 py-2 text-[11px] leading-snug text-slate-600">
+            They start on the default password and must choose their own the first time they sign in.
+            Staff can reset passwords but cannot create accounts — only you can.
+          </p>
+        </div>
+      </Modal>
+
+      <Modal
+        open={!!createdStaff}
+        onClose={() => setCreatedStaff(null)}
+        title="Staff account created"
+        subtitle={createdStaff ? `${createdStaff.staff.name} · ${createdStaff.staff.role}` : ''}
+        size="sm"
+        footer={
+          <div className="flex justify-end">
+            <button type="button" className="btn-primary btn-sm" onClick={() => setCreatedStaff(null)}>Done</button>
+          </div>
+        }
+      >
+        {createdStaff && (
+          <div className="space-y-3 p-5">
+            <dl className="space-y-1.5 rounded-lg bg-slate-50 p-3 text-sm">
+              <div className="flex justify-between gap-3">
+                <dt className="text-slate-500">Username</dt>
+                <dd className="truncate font-medium text-slate-900">
+                  {createdStaff.user.email || createdStaff.user.mobile}
+                </dd>
+              </div>
+              <div className="flex justify-between gap-3 border-t border-slate-200 pt-1.5">
+                <dt className="text-slate-500">Temporary password</dt>
+                <dd className="nums font-bold text-slate-900">{DEFAULT_PASSWORD}</dd>
+              </div>
+            </dl>
+            <p className="rounded-lg bg-amber-50 px-3 py-2 text-xs leading-snug text-amber-900">
+              Hand this over in person. They will have to set their own password before they can work.
+            </p>
+          </div>
+        )}
+      </Modal>
 
       <Modal
         open={!!confirming}
@@ -4327,6 +4572,9 @@ function PatientChart({ patientId, open, onClose, onCheckIn }) {
     if (open) setTab('summary');
   }, [open, patientId]);
 
+  /* Defence in depth: the chart shows one patient's whole record, so it must
+     never render for a patient account even if something mounts it there. */
+  if (role === 'patient') return null;
   if (!patient) return null;
 
   const activeRx = encounters.flatMap((e) =>
@@ -5421,6 +5669,7 @@ function DoctorPortal() {
     { id: 'consult', label: 'Consultation', icon: Stethoscope, count: inConsult ? 1 : 0 },
     { id: 'records', label: 'Records', icon: ClipboardList },
     { id: 'messages', label: 'Messages', icon: MessageSquare, count: unreadThreadCount(state, me) },
+    { id: 'followups', label: 'Follow-ups', icon: CalendarClock, count: dueReminders(state).length },
     { id: 'pharmacy', label: 'Pharmacy', icon: Boxes, count: state.inventory.filter((i) => stockStatus(i) !== 'In Stock').length },
     { id: 'billing', label: 'Billing', icon: PhilippinePeso, count: state.invoices.filter((i) => i.status === 'Pending').length },
     { id: 'accounts', label: 'Accounts', icon: ShieldCheck },
@@ -5448,6 +5697,7 @@ function DoctorPortal() {
         )}
         {tab === 'records' && <RecordsSearch onOpenChart={setChartId} />}
         {tab === 'messages' && <MessagesPanel accent="teal" />}
+        {tab === 'followups' && <FollowUpQueue />}
         {tab === 'pharmacy' && <Pharmacy accent="teal" />}
         {tab === 'billing' && <Billing accent="teal" />}
         {tab === 'accounts' && <AccountsPanel accent="teal" />}
@@ -7652,7 +7902,6 @@ function CheckInForm({ open, prefill, onClose }) {
         name: patientName(patient),
         email: patient.email,
         mobile: patient.mobile,
-        password: DEFAULT_PASSWORD,
         mustChangePassword: true,
         lastLoginAt: '',
         passwordResetAt: '',
@@ -8553,7 +8802,20 @@ function InvoiceEditor({ invoiceId, onClose, accent = 'sky' }) {
   const setItem = (itemId, changes) =>
     patch({ items: invoice.items.map((it) => (it.id === itemId ? { ...it, ...changes } : it)) });
 
-  const addLine = (preset) =>
+  const addLine = (preset) => {
+    /* Adding the same medicine twice tops up the existing line rather than
+       stacking duplicates the cashier then has to reconcile. */
+    const existing = preset.itemId
+      ? invoice.items.find((it) => it.itemId === preset.itemId && it.kind === 'drug')
+      : null;
+    if (existing) {
+      patch({
+        items: invoice.items.map((it) =>
+          it.id === existing.id ? { ...it, qty: Number(it.qty) + Number(preset.qty ?? 1) } : it,
+        ),
+      });
+      return;
+    }
     patch({
       items: [
         ...invoice.items,
@@ -8561,12 +8823,13 @@ function InvoiceEditor({ invoiceId, onClose, accent = 'sky' }) {
           id: `IT-${invoice.id}-${Date.now()}`,
           label: preset.label,
           kind: preset.kind ?? addKind,
-          qty: 1,
+          qty: Number(preset.qty) || 1,
           unitPrice: preset.price,
           ...(preset.itemId ? { itemId: preset.itemId, dispense: true } : {}),
         },
       ],
     });
+  };
 
   /* Lines flagged for dispensing that the shelf cannot actually cover. */
   const shortLines = invoice.items.filter((it) => {
@@ -8751,6 +9014,7 @@ function InvoiceEditor({ invoiceId, onClose, accent = 'sky' }) {
               <h3 className="label !mb-0">Add charges</h3>
               <div className="flex rounded-lg bg-slate-100 p-0.5">
                 {[
+                  { id: 'medicine', label: 'Medicine' },
                   { id: 'lab', label: 'Labs' },
                   { id: 'service', label: 'Services' },
                   { id: 'custom', label: 'Custom' },
@@ -8770,7 +9034,20 @@ function InvoiceEditor({ invoiceId, onClose, accent = 'sky' }) {
               </div>
             </div>
 
-            {addKind === 'custom' ? (
+            {addKind === 'medicine' ? (
+              <MedicineChargePicker
+                invoice={invoice}
+                onAdd={(item, qty) =>
+                  addLine({
+                    label: `${item.name} ${item.strength} ${item.form}`,
+                    kind: 'drug',
+                    price: item.price,
+                    itemId: item.id,
+                    qty,
+                  })
+                }
+              />
+            ) : addKind === 'custom' ? (
               <CustomChargeForm onAdd={(line) => addLine({ ...line, kind: 'service' })} />
             ) : (
               <div className="flex flex-wrap gap-1.5">
@@ -8939,6 +9216,133 @@ function InvoiceEditor({ invoiceId, onClose, accent = 'sky' }) {
   );
 }
 
+/* Search the formulary and add a medicine straight onto the statement with the
+   quantity dispensed. Shows what is on the shelf so the cashier does not commit
+   to dispensing stock that is not there. */
+function MedicineChargePicker({ invoice, onAdd }) {
+  const { state, toast } = useClinic();
+  const [query, setQuery] = useState('');
+  const [picked, setPicked] = useState(null);
+  const [qty, setQty] = useState(1);
+
+  const q = query.trim().toLowerCase();
+  const results = useMemo(() => {
+    const list = state.inventory.slice().sort((a, b) => a.name.localeCompare(b.name));
+    if (!q) return list.slice(0, 8);
+    return list
+      .filter((i) => `${i.name} ${i.strength} ${i.form} ${i.category}`.toLowerCase().includes(q))
+      .slice(0, 12);
+  }, [state.inventory, q]);
+
+  /* What is already going out on this statement counts against the shelf. */
+  const committed = (itemId) =>
+    (invoice?.items ?? [])
+      .filter((it) => it.itemId === itemId && it.dispense)
+      .reduce((n, it) => n + Number(it.qty || 0), 0);
+
+  const available = picked ? Number(picked.stock) - committed(picked.id) : 0;
+
+  const add = () => {
+    if (!picked) {
+      toast('Search for a medicine first.', 'warn');
+      return;
+    }
+    const amount = Math.max(1, Number(qty) || 1);
+    onAdd(picked, amount);
+    toast(`${picked.name} ${picked.strength} ×${amount} added`, 'success');
+    setPicked(null);
+    setQuery('');
+    setQty(1);
+  };
+
+  return (
+    <div className="space-y-2.5">
+      {picked ? (
+        <div className="flex flex-wrap items-end gap-2 rounded-lg border border-slate-200 bg-white p-2.5">
+          <div className="min-w-[180px] flex-1">
+            <p className="text-sm font-semibold text-slate-900">
+              {picked.name} {picked.strength}
+            </p>
+            <p className="text-xs text-slate-500">
+              {picked.form} · {peso(picked.price)} per {picked.unit}
+            </p>
+            <p
+              className={cx(
+                'nums text-[11px] font-semibold',
+                available <= 0 ? 'text-rose-600' : available < Number(qty) ? 'text-amber-600' : 'text-slate-400',
+              )}
+            >
+              {available} {picked.unit} available
+              {committed(picked.id) > 0 ? ` (${committed(picked.id)} already on this statement)` : ''}
+            </p>
+          </div>
+          <Field label="Quantity" className="w-28">
+            <input
+              type="number"
+              min="1"
+              className="input nums"
+              value={qty}
+              autoFocus
+              onChange={(e) => setQty(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && add()}
+            />
+          </Field>
+          <div className="flex gap-2">
+            <button type="button" className="btn-sky btn-sm mb-0.5" onClick={add}>
+              <Plus className="h-3.5 w-3.5" /> Add {peso(Number(qty || 0) * Number(picked.price))}
+            </button>
+            <button type="button" className="btn-ghost btn-sm mb-0.5" onClick={() => setPicked(null)}>
+              Change
+            </button>
+          </div>
+        </div>
+      ) : (
+        <>
+          <div className="relative">
+            <Search className="pointer-events-none absolute left-3 top-2.5 h-4 w-4 text-slate-400" />
+            <input
+              className="input pl-9"
+              placeholder="Search the pharmacy — name, strength or form…"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+            />
+          </div>
+          <ul className="thin-scroll max-h-56 divide-y divide-slate-100 overflow-y-auto rounded-lg border border-slate-200">
+            {results.length === 0 && (
+              <li className="px-3 py-4 text-center text-xs text-slate-400">
+                Nothing in the formulary matches “{query}”.
+              </li>
+            )}
+            {results.map((i) => {
+              const status = stockStatus(i);
+              return (
+                <li key={i.id}>
+                  <button
+                    type="button"
+                    onClick={() => { setPicked(i); setQty(1); }}
+                    className="row-hover flex w-full items-center gap-3 px-3 py-2 text-left"
+                  >
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-sm font-medium text-slate-800">
+                        {i.name} {i.strength}
+                      </span>
+                      <span className="block truncate text-xs text-slate-500">
+                        {i.form} · {i.category}
+                      </span>
+                    </span>
+                    <span className="nums shrink-0 text-xs font-semibold text-slate-700">{peso(i.price)}</span>
+                    <StatusBadge status={status} />
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+        </>
+      )}
+    </div>
+  );
+}
+
 function CustomChargeForm({ onAdd }) {
   const [label, setLabel] = useState('');
   const [price, setPrice] = useState('');
@@ -9048,8 +9452,9 @@ export default function App() {
   );
 
   const changePassword = useCallback(
-    (password) => {
-      dispatch({ type: 'SET_PASSWORD', id: currentUser.id, password });
+    async (password) => {
+      const record = await makePasswordRecord(password);
+      dispatch({ type: 'SET_PASSWORD', id: currentUser.id, ...record });
       toast('Password updated', 'success');
     },
     [dispatch, currentUser, toast],

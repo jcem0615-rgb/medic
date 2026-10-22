@@ -30,7 +30,7 @@ src/App.jsx                Whole app — sections marked `// ===== N.`
 ### App.jsx sections
 1. **Constants & utilities** — CLINIC letterhead, FREQUENCIES (OD/BID/TID/…/PRN with perDay), ICD10 list (WHO codes as used by PhilHealth), ALLERGY_RULES, `autoQty`, `invoiceTotals`, `stockStatus`, `isRxActive`, `nextId`.
 2. **Seed data** — `buildSeed()`; 1 doctor, 3 staff, 10 patients, 14 accounts, 108 formulary items, 14 encounters (SOAP + meds), invoices, 7 queue items, 5 appointments, 4 message threads, 6 notifications, the editable `clinic` letterhead and `rxTemplate`. Today's queue is anchored to *now* (`ago(mins)`) so the demo always looks live.
-3. **Store** — one pure `reducer` + `usePersistentStore` (localStorage key `mediclinic:v1`, `SCHEMA_VERSION`). Cross-tab sync via the `storage` event → open Staff and Doctor in two tabs to watch the queue move.
+3. **Store** — one pure `reducer` + `usePersistentStore` (localStorage key `mediclinic:v1`, `SCHEMA_VERSION`). Cross-tab sync via the `storage` event, **plus a re-read on `focus`/`visibilitychange`** so a tab that missed an event (throttled in the background, opened mid-write) converges when it comes forward. Open Staff and Doctor in two tabs to watch the queue move.
 4. **PWA hooks & shell** — `useNetwork` (real + simulated offline), `useServiceWorkerState`, Header, LiveClock, PwaStatus popover (simulate offline, reset demo), InstallBanner (`beforeinstallprompt` + fallback hint), Toasts, SubNav.
 4b. **Authentication** — `useSession` (localStorage when "remember me" is ticked, sessionStorage otherwise),
     `LoginScreen`, `ForcePasswordChange`, `AccountsPanel`. See **Accounts** below.
@@ -73,9 +73,28 @@ The session is the only thing kept outside the store, under `mediclinic:session`
 "remember me" is ticked, sessionStorage when it is not. `role` comes from `user.kind`, so the old demo
 role switcher is gone; the login screen lists demo accounts instead.
 
-**This is not security.** Passwords sit in localStorage in plain text, there is no hashing, no rate
-limiting and no server to enforce any of it — a user can edit their own role in devtools. It is a
-faithful *interface* for auth, standing in until Supabase Auth + RLS (gap 1).
+### Passwords are hashed, never stored
+A chosen password is put through **PBKDF2-SHA256, 120k iterations, with a 16-byte per-user salt**
+(`makePasswordRecord` / `verifyPassword`) and only `passwordHash` + `passwordSalt` are kept. An account
+with **no hash is still on `DEFAULT_PASSWORD`** — that is how a new or reset account is represented, so
+the default never has to be written to storage either. Sign-in hashes even when no account matched, so a
+wrong username and a wrong password cost the same time. `crypto.subtle` needs a secure context: over
+plain http on a LAN IP, hashing throws and says to use HTTPS rather than silently falling back.
+
+**It is still not security.** There is no server, so anyone with the device can edit the store or the
+session and promote themselves. What hashing buys is narrower and real: reading localStorage never hands
+over a password the person may have reused somewhere that *does* matter. Real enforcement waits for
+Supabase Auth + RLS (gap 1).
+
+### What a user can actually see
+Role guards are belt-and-braces, not the only defence: `PatientChart` and `AccountsPanel` return nothing
+for a patient account even though neither is mounted in that portal. The patient portal is swept by the
+`secure` suite, which asserts that **no other patient's name appears anywhere in its DOM** across every
+view — the now-serving board deliberately shows a queue *number*, never a name.
+
+The leak that remains is architectural: the whole store is one localStorage blob, so every signed-in
+browser physically holds every patient's record. No amount of UI gating changes that. Only a backend with
+row-level security does.
 
 ## Device notifications
 Sent follow-up reminders and incoming messages raise a real system notification through
@@ -95,6 +114,11 @@ tab open on the same machine. On iOS the app must be installed to the Home Scree
 know goes through the attending doctor or the phone. The rule is enforced in two places — the compose
 recipient list is built from it, *and* `SEND_MESSAGE` re-checks it in the reducer, so a hand-crafted
 dispatch can't create a forbidden thread. Threads are two-party only.
+
+## Who can create accounts
+Only the **doctor** can add staff (`ADD_STAFF`, which writes the staff record and the user account
+together) — the button is not rendered for staff. Both the doctor and staff can *reset* a password, and
+staff still register patients. Hiring is the doctor's call; the front desk's job is the desk.
 
 ## Registering a patient creates their account
 `CheckInForm` in "New patient" mode dispatches `ADD_PATIENT` with both the patient *and* a `user`, so the
@@ -150,6 +174,13 @@ above `LOGO_MAX_CHARS` — the whole store is one localStorage string, so an unb
 persistence. Rasterizing also means an uploaded SVG could never reach the DOM. `ClinicMark` draws the logo
 wherever the clinic is identified (documents, header, login) and falls back to the default cross.
 A refused localStorage write now emits `mc-persist-error`, which the app surfaces once as a toast.
+
+## Billing a medicine
+The statement's **Add charges** has a `Medicine` tab (`MedicineChargePicker`): search the formulary,
+see what is on the shelf, set a quantity, and the line is added flagged to dispense. Adding the same
+medicine twice **tops up the existing line** instead of stacking duplicates the cashier has to
+reconcile, and the availability figure subtracts what this statement already commits. Payment then
+deducts exactly the dispensed quantity, as it always did.
 
 ## Formulary
 108 stocked items across ~81 generics. A generic may have several variants (strength + form): Paracetamol

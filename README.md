@@ -4,8 +4,9 @@ A Progressive Web App for a single-doctor Philippine outpatient clinic. One queu
 **Doctor**, **Patient**, **Staff/Receptionist** — reached by signing in with the matching account.
 
 Everything runs client-side on seeded demo data held in `localStorage`. There is no backend, and the
-sign-in is a faithful *interface* for authentication rather than real security — passwords are stored in
-the browser in plain text. **Do not enter real patient information.**
+sign-in is a faithful *interface* for authentication rather than real security. Passwords are hashed
+(PBKDF2-SHA256, per-user salt) so none is ever stored in the clear, but there is no server to enforce
+anything and every signed-in browser holds the whole dataset. **Do not enter real patient information.**
 
 ## Signing in
 
@@ -101,6 +102,10 @@ syncs across tabs through the `storage` event.
   the next one in without leaving the workspace.
 - **E-signature** — Doctor → *Settings* → *My details* → upload a signature. It prints on the line of
   every document.
+- **Bill a medicine** — open a statement → *Add charges* → *Medicine*. Search the pharmacy, set a
+  quantity, and it goes on the bill flagged to dispense; paying deducts it from stock.
+- **Two portals at once** — open Staff and Doctor in two tabs. Edit a price in one and it is live in the
+  other; a check-in appears in the doctor's queue without a refresh.
 - **Printing** — prescriptions, medical certificates, medical abstracts and billing statements all print
   on the clinic letterhead. Use the print dialog to save as PDF.
 
