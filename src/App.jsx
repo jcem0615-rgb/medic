@@ -1551,7 +1551,13 @@ function reducer(state, action) {
       };
 
     case 'ADD_PATIENT':
-      return { ...state, patients: [...state.patients, action.patient] };
+      return {
+        ...state,
+        patients: [...state.patients, action.patient],
+        /* Registering a patient creates their account in the same step, so the
+           front desk never has to remember a second one. */
+        users: action.user ? [...state.users, action.user] : state.users,
+      };
 
     case 'UPDATE_PATIENT':
       return {
@@ -3897,8 +3903,16 @@ function DocSignature({ doctor, label = 'Attending Physician', showLicenses = tr
   return (
     <div className="avoid-break mt-10 flex justify-end">
       <div className="w-64 text-center">
-        {/* Placeholder — no e-signature capture yet (CLAUDE.md gap 5). */}
-        <div className="mb-1 h-10 border-b border-slate-400" />
+        {/* The uploaded e-signature sits on the ruled line; blank when none. */}
+        <div className="mb-1 flex h-12 items-end justify-center border-b border-slate-400">
+          {doctor?.signature && (
+            <img
+              src={doctor.signature}
+              alt=""
+              className="max-h-12 max-w-full object-contain"
+            />
+          )}
+        </div>
         <p className="font-serif text-sm font-bold text-slate-900">
           {doctor ? `${doctor.name}, ${doctor.title}` : '—'}
         </p>
@@ -4773,6 +4787,13 @@ function EncounterCard({ encounter, patient, defaultOpen = false, showPatient = 
             </div>
           )}
 
+          {encounter.medsAmendedAt && (
+            <p className="mt-3 text-[11px] font-medium text-amber-700">
+              Prescription amended {fmtDateTime(encounter.medsAmendedAt)}
+              {encounter.medsAmendedBy ? ` by ${encounter.medsAmendedBy}` : ''}
+            </p>
+          )}
+
           {(encounter.meds ?? []).length > 0 && (
             <ul className="mt-3 space-y-1 border-t border-slate-200 pt-2.5">
               {encounter.meds.map((m, i) => (
@@ -4848,6 +4869,78 @@ const SAMPLE_RX_ENCOUNTER = {
     },
   ],
 };
+
+/* E-signature upload. Same canvas pipeline as the logo, so an SVG can never
+   reach the DOM and the data URL stays small enough to persist. */
+function SignatureUploader({ doctor }) {
+  const { act, toast } = useClinic();
+  const signature = doctor?.signature ?? '';
+  const [busy, setBusy] = useState(false);
+  const inputRef = useRef(null);
+
+  const pick = async (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    setBusy(true);
+    try {
+      const { dataUrl } = await processLogoFile(file);
+      act({ type: 'UPDATE_DOCTOR', id: doctor.id, patch: { signature: dataUrl } });
+      toast('Signature updated — it now prints on your documents', 'success');
+    } catch (err) {
+      toast(err.message || 'That image could not be used.', 'error');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Field
+      label="E-signature"
+      className="sm:col-span-2"
+      hint="PNG with a transparent background works best. It prints above the signature line on prescriptions, certificates and abstracts."
+    >
+      <div className="flex flex-wrap items-center gap-3">
+        <span className="flex h-16 w-48 shrink-0 items-end justify-center overflow-hidden rounded-lg border border-slate-200 bg-white px-2 pb-1">
+          {signature ? (
+            <img src={signature} alt="Current signature" className="max-h-14 max-w-full object-contain" />
+          ) : (
+            <span className="w-full border-b border-slate-300 pb-1 text-center text-[10px] text-slate-400">
+              no signature on file
+            </span>
+          )}
+        </span>
+        <div className="flex flex-wrap gap-2">
+          <button type="button" className="btn-ghost btn-sm" disabled={busy} onClick={() => inputRef.current?.click()}>
+            <Upload className="h-3.5 w-3.5" />
+            {busy ? 'Processing…' : signature ? 'Replace signature' : 'Upload signature'}
+          </button>
+          {signature && (
+            <button
+              type="button"
+              className="btn-ghost btn-sm"
+              disabled={busy}
+              onClick={() => {
+                act({ type: 'UPDATE_DOCTOR', id: doctor.id, patch: { signature: '' } });
+                toast('Signature removed — documents print a blank line again', 'success');
+              }}
+            >
+              <Trash2 className="h-3.5 w-3.5" /> Remove
+            </button>
+          )}
+          <input
+            ref={inputRef}
+            type="file"
+            accept="image/png,image/jpeg,image/webp"
+            className="hidden"
+            onChange={pick}
+            aria-label="Upload e-signature"
+          />
+        </div>
+      </div>
+    </Field>
+  );
+}
 
 /* Practice locations. A doctor may hold clinic at several sites; exactly one is
    primary, which supplies the default room and fee for walk-ins. */
@@ -5148,6 +5241,7 @@ function DoctorSettings() {
                 <Field label="S2 licence no." hint="Required to prescribe dangerous drugs." className="sm:col-span-2">
                   <input className="input nums" value={doctor?.s2 ?? ''} onChange={(e) => setDoctor({ s2: e.target.value })} />
                 </Field>
+                <SignatureUploader doctor={doctor} />
 
               </div>
             </section>
@@ -5304,8 +5398,11 @@ function DoctorPortal() {
   const waiting = myQueue.filter((q) => q.status === 'Waiting');
 
   const callIn = useCallback(
-    (item) => {
-      if (inConsult && inConsult.id !== item.id) {
+    (item, { force = false } = {}) => {
+      /* `force` is for the hand-off at the end of a consultation: the discharge
+         has already been dispatched, but `inConsult` still holds the patient who
+         just left, so the guard below would wrongly refuse. */
+      if (!force && inConsult && inConsult.id !== item.id) {
         toast('Finish the current consultation before calling in another patient.', 'warn');
         return;
       }
@@ -5324,6 +5421,8 @@ function DoctorPortal() {
     { id: 'consult', label: 'Consultation', icon: Stethoscope, count: inConsult ? 1 : 0 },
     { id: 'records', label: 'Records', icon: ClipboardList },
     { id: 'messages', label: 'Messages', icon: MessageSquare, count: unreadThreadCount(state, me) },
+    { id: 'pharmacy', label: 'Pharmacy', icon: Boxes, count: state.inventory.filter((i) => stockStatus(i) !== 'In Stock').length },
+    { id: 'billing', label: 'Billing', icon: PhilippinePeso, count: state.invoices.filter((i) => i.status === 'Pending').length },
     { id: 'accounts', label: 'Accounts', icon: ShieldCheck },
     { id: 'settings', label: 'Settings', icon: Settings2 },
   ];
@@ -5341,12 +5440,16 @@ function DoctorPortal() {
             item={inConsult}
             waiting={waiting}
             onCallIn={callIn}
-            onDone={() => setTab('overview')}
+            /* Stay on Consultation: the empty state is the waiting list, so the
+               doctor can take the next patient without hunting for them. */
+            onDone={() => setTab('consult')}
             onOpenChart={setChartId}
           />
         )}
         {tab === 'records' && <RecordsSearch onOpenChart={setChartId} />}
         {tab === 'messages' && <MessagesPanel accent="teal" />}
+        {tab === 'pharmacy' && <Pharmacy accent="teal" />}
+        {tab === 'billing' && <Billing accent="teal" />}
         {tab === 'accounts' && <AccountsPanel accent="teal" />}
         {tab === 'settings' && <DoctorSettings />}
       </main>
@@ -5531,6 +5634,8 @@ const DISPOSITIONS = [
 ];
 
 function ConsultationWorkspace({ item, waiting, onCallIn, onDone, onOpenChart }) {
+  /* Who the doctor would see next if they keep going. */
+  const nextWaiting = waiting.find((q) => q.id !== item?.id) ?? null;
   const { state, doctorId, act, toast, openPrint } = useClinic();
   const patient = findBy(state.patients, item?.patientId);
   const doctor = findBy(state.doctors, doctorId);
@@ -5598,7 +5703,7 @@ function ConsultationWorkspace({ item, waiting, onCallIn, onDone, onOpenChart })
     );
   }
 
-  const complete = () => {
+  const complete = ({ thenCallNext = false } = {}) => {
     if (!draft.soap.a.trim() && draft.diagnoses.length === 0) {
       toast('Add an assessment or at least one diagnosis before discharging.', 'warn');
       return;
@@ -5695,6 +5800,10 @@ function ConsultationWorkspace({ item, waiting, onCallIn, onDone, onOpenChart })
         (followUpNotification ? ` · follow-up reminder set for ${fmtDate(draft.followUp)}` : ''),
       'success',
     );
+
+    /* Keep the doctor in the room: either call the next patient straight in, or
+       land on the waiting list so they can pick. Never bounce to Overview. */
+    if (thenCallNext && nextWaiting) onCallIn(nextWaiting, { force: true });
     onDone();
   };
 
@@ -5909,11 +6018,25 @@ function ConsultationWorkspace({ item, waiting, onCallIn, onDone, onOpenChart })
             </button>
           </section>
 
-          <button type="button" onClick={complete} className="btn-primary w-full py-3">
+          <button type="button" onClick={() => complete()} className="btn-primary w-full py-3">
             <CheckCircle2 className="h-4 w-4" /> Complete &amp; discharge
           </button>
+
+          {nextWaiting && (
+            <button
+              type="button"
+              onClick={() => complete({ thenCallNext: true })}
+              className="btn-ghost w-full"
+            >
+              <ArrowRight className="h-4 w-4" /> Complete &amp; call #{nextWaiting.number}
+            </button>
+          )}
+
           <p className="text-center text-[11px] text-slate-500">
             Creates the encounter record and sends a pending statement to billing.
+            {nextWaiting
+              ? ` ${waiting.filter((q) => q.id !== item.id).length} still waiting.`
+              : ' Nobody else is waiting.'}
           </p>
         </div>
       </div>
@@ -7011,6 +7134,11 @@ function PatientRecords({ patient }) {
                   {fmtDate(rxEndDate(med, encounter.date))}
                 </p>
                 {med.instructions && <p className="text-[11px] italic text-slate-500">{med.instructions}</p>}
+                {encounter.medsAmendedAt && (
+                  <p className="text-[11px] font-medium text-amber-700">
+                    Amended by your doctor on {fmtDate(ymd(new Date(encounter.medsAmendedAt)))}
+                  </p>
+                )}
               </div>
               <button
                 type="button"
@@ -7153,8 +7281,8 @@ function StaffPortal() {
         {tab === 'patients' && (
           <PatientDirectory onOpenChart={setChartId} onCheckIn={(p) => setCheckInFor(p)} />
         )}
-        {tab === 'pharmacy' && <Pharmacy />}
-        {tab === 'billing' && <Billing />}
+        {tab === 'pharmacy' && <Pharmacy accent="sky" />}
+        {tab === 'billing' && <Billing accent="sky" />}
         {tab === 'followups' && <FollowUpQueue />}
         {tab === 'messages' && <MessagesPanel accent="sky" />}
         {tab === 'accounts' && <AccountsPanel accent="sky" />}
@@ -7427,6 +7555,7 @@ function CheckInForm({ open, prefill, onClose }) {
   const [vitals, setVitals] = useState({ bp: '', hr: '', temp: '', weight: '' });
   const [form, setForm] = useState(emptyNewPatient);
   const [appointmentId, setAppointmentId] = useState('');
+  const [newAccount, setNewAccount] = useState(null);
 
   /* Re-seed the form whenever the modal is opened for a different patient. */
   useEffect(() => {
@@ -7450,6 +7579,7 @@ function CheckInForm({ open, prefill, onClose }) {
     }
     setVitals({ bp: '', hr: '', temp: '', weight: '' });
     setForm(emptyNewPatient);
+    setNewAccount(null);
   }, [open, prefill, state.doctors]);
 
   const selected = findBy(state.patients, patientId);
@@ -7480,6 +7610,16 @@ function CheckInForm({ open, prefill, onClose }) {
         toast('First name, last name, birth date and mobile number are required.', 'warn');
         return;
       }
+      /* The mobile (or e-mail) becomes their username, so it has to be unique. */
+      const clash = state.users.find(
+        (u) =>
+          matchesIdentifier(u, form.mobile) ||
+          (form.email.trim() && matchesIdentifier(u, form.email)),
+      );
+      if (clash) {
+        toast(`That mobile number or e-mail already signs in as ${clash.name}.`, 'error');
+        return;
+      }
       targetId = nextId('P', state.patients);
       const patient = {
         id: targetId,
@@ -7502,7 +7642,24 @@ function CheckInForm({ open, prefill, onClose }) {
         },
         registeredAt: ymd(),
       };
-      act({ type: 'ADD_PATIENT', patient });
+
+      /* The account is created with the patient, signing in with whichever of the
+         e-mail / mobile the desk captured, on the default password. */
+      const user = {
+        id: nextId('U', state.users),
+        kind: 'patient',
+        refId: targetId,
+        name: patientName(patient),
+        email: patient.email,
+        mobile: patient.mobile,
+        password: DEFAULT_PASSWORD,
+        mustChangePassword: true,
+        lastLoginAt: '',
+        passwordResetAt: '',
+      };
+
+      act({ type: 'ADD_PATIENT', patient, user });
+      setNewAccount({ patient, user });
     }
 
     if (!targetId) {
@@ -7536,8 +7693,58 @@ function CheckInForm({ open, prefill, onClose }) {
     if (appointmentId) act({ type: 'UPDATE_APPOINTMENT', id: appointmentId, patch: { status: 'Checked In' } });
 
     toast(`Checked in as #${nextNumber} — ${reason.trim()}`, 'success');
-    onClose();
+    /* A brand-new patient leaves the credentials card up; otherwise close. */
+    if (mode !== 'new') onClose();
   };
+
+  if (newAccount) {
+    return (
+      <Modal
+        open={open}
+        onClose={() => { setNewAccount(null); onClose(); }}
+        title="Patient registered"
+        subtitle={`${newAccount.patient.id} · added to today's queue`}
+        size="sm"
+        footer={
+          <div className="flex justify-end">
+            <button
+              type="button"
+              className="btn-sky btn-sm"
+              onClick={() => { setNewAccount(null); onClose(); }}
+            >
+              Done
+            </button>
+          </div>
+        }
+      >
+        <div className="space-y-3 p-5">
+          <p className="text-sm text-slate-700">
+            <strong>{newAccount.user.name}</strong> can now sign in to the patient portal.
+          </p>
+          <dl className="space-y-1.5 rounded-lg bg-slate-50 p-3 text-sm">
+            <div className="flex justify-between gap-3">
+              <dt className="text-slate-500">Username</dt>
+              <dd className="truncate font-medium text-slate-900">{newAccount.user.email || newAccount.user.mobile}</dd>
+            </div>
+            {newAccount.user.email && newAccount.user.mobile && (
+              <div className="flex justify-between gap-3">
+                <dt className="text-slate-500">or</dt>
+                <dd className="nums truncate font-medium text-slate-900">{newAccount.user.mobile}</dd>
+              </div>
+            )}
+            <div className="flex justify-between gap-3 border-t border-slate-200 pt-1.5">
+              <dt className="text-slate-500">Temporary password</dt>
+              <dd className="nums font-bold text-slate-900">{DEFAULT_PASSWORD}</dd>
+            </div>
+          </dl>
+          <p className="rounded-lg bg-amber-50 px-3 py-2 text-xs leading-snug text-amber-900">
+            Give these to the patient in person. They will have to choose their own password the first
+            time they sign in.
+          </p>
+        </div>
+      </Modal>
+    );
+  }
 
   return (
     <Modal
@@ -7873,8 +8080,10 @@ function PatientDirectory({ onOpenChart, onCheckIn }) {
 
 const emptyItemForm = { name: '', strength: '', form: 'Tablet', unit: 'tab', category: '', price: '', stock: '', reorderLevel: '' };
 
-function Pharmacy() {
+function Pharmacy({ accent = 'sky' }) {
   const { state, act, toast } = useClinic();
+  const btnAccent = accent === 'teal' ? 'btn-primary' : 'btn-sky';
+  const tabTone = accent === 'teal' ? 'text-teal-700' : 'text-sky-700';
   const [query, setQuery] = useState('');
   const [filter, setFilter] = useState('all');
   const [restocking, setRestocking] = useState(null);
@@ -7977,14 +8186,14 @@ function Pharmacy() {
                 onClick={() => setFilter(f.id)}
                 className={cx(
                   'rounded-md px-3 py-1.5 text-xs font-semibold transition',
-                  filter === f.id ? 'bg-white text-sky-700 shadow-sm' : 'text-slate-500 hover:text-slate-800',
+                  filter === f.id ? cx('bg-white shadow-sm', tabTone) : 'text-slate-500 hover:text-slate-800',
                 )}
               >
                 {f.label}
               </button>
             ))}
           </div>
-          <button type="button" className="btn-sky btn-sm" onClick={() => setAdding(true)}>
+          <button type="button" className={cx(btnAccent, "btn-sm")} onClick={() => setAdding(true)}>
             <PackagePlus className="h-3.5 w-3.5" /> Add item
           </button>
         </div>
@@ -8085,7 +8294,7 @@ function Pharmacy() {
         footer={
           <div className="flex justify-end gap-2">
             <button type="button" className="btn-ghost btn-sm" onClick={() => setRestocking(null)}>Cancel</button>
-            <button type="button" className="btn-sky btn-sm" onClick={commitRestock}>
+            <button type="button" className={cx(btnAccent, "btn-sm")} onClick={commitRestock}>
               <PackagePlus className="h-3.5 w-3.5" /> Add to stock
             </button>
           </div>
@@ -8128,7 +8337,7 @@ function Pharmacy() {
         footer={
           <div className="flex justify-end gap-2">
             <button type="button" className="btn-ghost btn-sm" onClick={() => setAdding(false)}>Cancel</button>
-            <button type="button" className="btn-sky btn-sm" onClick={addItem}>
+            <button type="button" className={cx(btnAccent, "btn-sm")} onClick={addItem}>
               <Plus className="h-3.5 w-3.5" /> Add item
             </button>
           </div>
@@ -8169,8 +8378,10 @@ function Pharmacy() {
   );
 }
 
-function Billing() {
+function Billing({ accent = 'sky' }) {
   const { state } = useClinic();
+  const btnAccent = accent === 'teal' ? 'btn-primary' : 'btn-sky';
+  const tabTone = accent === 'teal' ? 'text-teal-700' : 'text-sky-700';
   const [filter, setFilter] = useState('Pending');
   const [openId, setOpenId] = useState(null);
   const [query, setQuery] = useState('');
@@ -8227,7 +8438,7 @@ function Billing() {
                 onClick={() => setFilter(f)}
                 className={cx(
                   'rounded-md px-3 py-1.5 text-xs font-semibold transition',
-                  filter === f ? 'bg-white text-sky-700 shadow-sm' : 'text-slate-500 hover:text-slate-800',
+                  filter === f ? cx('bg-white shadow-sm', tabTone) : 'text-slate-500 hover:text-slate-800',
                 )}
               >
                 {f}
@@ -8285,7 +8496,7 @@ function Billing() {
                     <td className="td text-right">
                       <button
                         type="button"
-                        className={inv.status === 'Pending' ? 'btn-sky btn-sm' : 'btn-ghost btn-sm'}
+                        className={inv.status === 'Pending' ? cx(btnAccent, 'btn-sm') : 'btn-ghost btn-sm'}
                         onClick={() => setOpenId(inv.id)}
                       >
                         {inv.status === 'Pending' ? (
@@ -8305,12 +8516,12 @@ function Billing() {
         </div>
       </div>
 
-      <InvoiceEditor invoiceId={openId} onClose={() => setOpenId(null)} />
+      <InvoiceEditor invoiceId={openId} onClose={() => setOpenId(null)} accent={accent} />
     </div>
   );
 }
 
-function InvoiceEditor({ invoiceId, onClose }) {
+function InvoiceEditor({ invoiceId, onClose, accent = 'sky' }) {
   const { state, act, toast, openPrint } = useClinic();
   const invoice = findBy(state.invoices, invoiceId);
   const [method, setMethod] = useState('Cash');
@@ -8424,7 +8635,7 @@ function InvoiceEditor({ invoiceId, onClose }) {
               <Printer className="h-3.5 w-3.5" /> Print
             </button>
             {!locked && (
-              <button type="button" className="btn-sky" onClick={receivePayment}>
+              <button type="button" className={accent === 'teal' ? 'btn-primary' : 'btn-sky'} onClick={receivePayment}>
                 <Banknote className="h-4 w-4" /> Receive payment &amp; dispense
               </button>
             )}

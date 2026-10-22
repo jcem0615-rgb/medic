@@ -40,7 +40,7 @@ npm run build && npm run preview   # http://localhost:4173
 | Portal | Screens |
 |---|---|
 | **Staff** | Now-serving board (one panel for the clinic), check-in (existing or new patient, triage vitals, priority lane), queue status controller, patient directory, pharmacy stock, billing and payment collection, follow-up chase list, messages |
-| **Doctor** | Daily overview with KPIs and check-ins by hour, consultation workspace (vitals, SOAP with templates, 161-code ICD-10 picker, prescribing with allergy + stock checks, patient chart on hand), records search, messages, accounts, and settings for the signature block, prescription template and letterhead |
+| **Doctor** | Daily overview with KPIs and check-ins by hour, consultation workspace (vitals, SOAP with templates, 161-code ICD-10 picker, prescribing with allergy + stock checks, patient chart on hand, hand straight to the next patient), records search, messages, pharmacy, billing, accounts, and settings for the signature block, e-signature, prescription template, letterhead and clinic locations |
 | **Patient** | Live queue position, follow-up reminders, next appointment, teleconsult waiting room, appointment booking, prescriptions and visit history, messages to their doctors |
 
 ### The main flow
@@ -95,6 +95,12 @@ syncs across tabs through the `storage` event.
 - **Amend a prescription** — as the Doctor, open a patient's chart → *Prescriptions* → *Edit*. Change a
   course or add a medicine; the chart and the printed copy both record that it was amended, and the
   originally issued list is kept.
+- **Register a patient** — as Staff, check in a *New patient*. Their account is created in the same step;
+  the card that appears hands you the username and temporary password to read out.
+- **Next patient** — as the Doctor, finish a consultation with *Complete & call #N* to discharge and call
+  the next one in without leaving the workspace.
+- **E-signature** — Doctor → *Settings* → *My details* → upload a signature. It prints on the line of
+  every document.
 - **Printing** — prescriptions, medical certificates, medical abstracts and billing statements all print
   on the clinic letterhead. Use the print dialog to save as PDF.
 

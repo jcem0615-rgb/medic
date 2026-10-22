@@ -41,7 +41,7 @@ src/App.jsx                Whole app — sections marked `// ===== N.`
 5b. **Messaging & notifications** — `MESSAGING_RULES` + `canMessage`, `threadsFor`/`unreadThreadCount`/`notificationsFor`/`dueReminders`, `NotificationBell` (header), `MessagesPanel` (shared inbox for all three portals), `PatientReminders`, `FollowUpQueue`.
 6. **Print Center & documents** — `PrintCenter` renders a preview in a modal *and* portals a clean copy into `#print-root`; `@media print` hides `#root` and shows only `#print-root`, so multi-page docs paginate correctly. Documents: `MedicalCertificateDoc` (kind = certificate | abstract), `PrescriptionDoc`, `ReceiptDoc`.
    Also `PatientChart` (shared slide-over used by Doctor records and Staff directory; role-gated actions) and `EncounterCard`.
-7. **Doctor portal** — Overview (KPIs, live queue, check-ins by hour, today's appts), `ConsultationWorkspace` (vitals, SOAP + templates, ICD-10, `MedicationBuilder`, disposition, draft autosave into the queue item, **Open chart** for the patient in the room), `RecordsSearch`, Messages, Accounts, and `DoctorSettings` (signature block, prescription template, letterhead — with a live preview of the real document).
+7. **Doctor portal** — Overview (KPIs, live queue, check-ins by hour, today's appts), `ConsultationWorkspace` (vitals, SOAP + templates, ICD-10, `MedicationBuilder`, disposition, draft autosave into the queue item, **Open chart** for the patient in the room), `RecordsSearch`, Messages, **Pharmacy and Billing** (the same components the staff use, passed `accent="teal"`), Accounts, and `DoctorSettings` (signature block + e-signature upload, prescription template, letterhead, clinic locations — with a live preview of the real document).
 8. **Patient portal** — Dashboard (live queue position, follow-up reminders, next appt, teleconsult waiting room), `BookAppointment` (dept → doctor → date/slot → mode → complaint), `PatientRecords` (active/past Rx, simulated QR verification, downloadable summaries), Messages (doctors only).
 9. **Staff portal** — `ReceptionQueue` (now-serving board, `CheckInForm` existing/new patient, priority toggle, status controller, appointment check-in), `PatientDirectory`, `Pharmacy` (restock, inline price edit, add item), `Billing` + `InvoiceEditor` (dispense toggles, lab presets, SC/PWD 20% discount, Cash/GCash/Maya/Card, change computation, stock deduction on payment), `FollowUpQueue`, Messages (doctors only), Accounts.
 10. **App root** — context provider (store + act + toasts + print + role identities), offline outbox counter, `?portal=` deep links from the manifest shortcuts.
@@ -96,6 +96,22 @@ know goes through the attending doctor or the phone. The rule is enforced in two
 recipient list is built from it, *and* `SEND_MESSAGE` re-checks it in the reducer, so a hand-crafted
 dispatch can't create a forbidden thread. Threads are two-party only.
 
+## Registering a patient creates their account
+`CheckInForm` in "New patient" mode dispatches `ADD_PATIENT` with both the patient *and* a `user`, so the
+front desk never has a second step to forget. The username is whatever they captured — e-mail or mobile —
+and the password is `DEFAULT_PASSWORD` with `mustChangePassword` set, so the patient is forced to choose
+their own at first sign-in. The identifier is checked against every existing account first, because it is
+the username: a clash is refused by name. After saving, the modal shows a credentials card for the desk to
+read out; it stays up until dismissed rather than closing behind them.
+
+## Finishing a consultation
+`Complete & discharge` keeps the doctor on the Consultation tab — the empty state there *is* the waiting
+list, so the next patient is one click away. When anyone else is waiting there is also
+`Complete & call #N`, which discharges and calls the next patient straight in.
+**Watch the closure:** `callIn` guards against starting a second consultation, but at hand-off time its
+`inConsult` still holds the patient being discharged, so that path passes `{ force: true }`. Removing the
+flag silently reintroduces "Finish the current consultation before calling in another patient."
+
 ## Amending a prescription
 The doctor can edit an already-issued prescription from the chart's **Prescriptions** tab
 (`PrescriptionEditor`, doctor-only). It reuses `MedicationBuilder`, so the allergy and stock checks that
@@ -103,6 +119,10 @@ apply during a consultation apply to a correction too. Saving writes `UPDATE_ENC
 `meds` plus `medsAmendedAt` / `medsAmendedBy`, and keeps the first-issued list in `medsOriginal` — an
 issued prescription is never rewritten without a trace. The chart shows an "Amended" line and the printed
 copy states that it supersedes the original. Save is disabled until something actually changes.
+
+Everything reads the one `encounters` slice, so an amendment is immediately visible in the patient's own
+records (with "Amended by your doctor on …"), in `EncounterCard` anywhere it appears, and on the same
+chart opened from the staff portal — there is no copy to keep in step.
 
 This is a stand-in for a real amendment trail: there is still no append-only audit log (gap 8), and
 nothing stops a later edit overwriting `medsAmendedBy`.
@@ -155,7 +175,7 @@ tube, vial, amp, pc, respule, sachet) suggest a quantity of 1 instead of `autoQt
    (`patients, doctors, encounters, encounter_meds, queue, appointments, inventory, invoices, invoice_items`), Realtime for the queue.
 3. **Offline sync is simulated.** Replace the counter with a Dexie/IndexedDB outbox using `client_uuid` idempotency keys.
 4. **BIR compliance.** Receipt is a billing statement / acknowledgement — no BIR-registered OR series, no CAS/POS accreditation fields, no VAT breakdown. SC/PWD handled as flat 20% of subtotal (real rules: VAT-exempt + 20%; verify OSCA/PWD ID, log ID numbers).
-5. **Placeholders:** DOH LTO number (now editable in Settings → Letterhead, still not a real licence), clinic seal, signatures (no e-signature capture), teleconsult links (`meet.mediclinic.ph` is fake), QR codes (`FakeQR` draws a deterministic pattern — swap for a real QR lib encoding a signed verification URL).
+5. **Placeholders:** DOH LTO number (now editable in Settings → Letterhead, still not a real licence), clinic seal, e-signature (an uploaded image, not a cryptographic signature — nothing binds it to the document or proves who applied it), teleconsult links (`meet.mediclinic.ph` is fake), QR codes (`FakeQR` draws a deterministic pattern — swap for a real QR lib encoding a signed verification URL).
 6. **Payments.** GCash/Maya/Card record the method and a reference number only — no gateway.
 7. **Clinical safety.** Allergy check is keyword-based (`ALLERGY_RULES`), no drug–drug interaction database, ICD list is a short curated subset.
 8. **Data Privacy Act (R.A. 10173).** No consent capture, audit log, or access logging yet — required before real patient data.
