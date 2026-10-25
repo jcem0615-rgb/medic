@@ -188,11 +188,47 @@ alone is tablet / syrup / drops / ampule. `MedicationBuilder` is therefore two-s
 strength-variant — and `routeForForm` sets the route from the chosen form. `WHOLE_PACK_UNITS` (bottle,
 tube, vial, amp, pc, respule, sachet) suggest a quantity of 1 instead of `autoQty`'s doses x days.
 
+## Any-device layout
+The app is built to one breakpoint story, and `SubNav` is the hinge:
+
+- **Below `lg` (phones and portrait tablets)** every section lives behind one hamburger button that
+  opens a full-width drawer listing all of them with their unread/pending counts. The trigger shows
+  the current section and a total badge for everything else, so nothing is hidden without a hint. The
+  drawer closes on Escape, on a backdrop tap, on choosing a section, and automatically if the viewport
+  grows past `lg`; it locks body scroll while open.
+- **From `lg` up** the familiar tab row returns. The doctor has nine sections, so `.tab` tightens its
+  gap and padding below `xl` to make the row fit 1024px exactly (992/992) rather than scroll.
+
+Supporting rules, all in `index.css`:
+- `.card` carries **`min-w-0`**. A card is nearly always a grid or flex item, and anything `truncate`
+  inside it reports the full untruncated string as its min-content width; grid items default to
+  `min-width: auto`, so without this one declaration a long chief complaint widened the whole column
+  past the viewport. The same reasoning put `[&>*]:min-w-0` on the settings grid, whose column was
+  being stretched by a horizontally scrollable tab strip.
+- **`.th-wide` / `.td-wide`** drop a column below `md`; **`.cell-fold`** shows the same facts inside
+  the first cell at exactly those widths. Pharmacy, Billing, Accounts and the Patient directory all use
+  this, so a phone sees every fact *and* reaches the action button with no sideways scrolling at 360px.
+- **`.doc-zoom`** scales the A4 document previews with `zoom`, not `transform: scale` — `zoom` shrinks
+  the layout box too, so a 210mm page fits a phone instead of pushing the document sideways. Print is
+  unaffected; printing renders `#print-root`, never these previews.
+- `button:has(> svg:only-child)` gives every icon-only button a 32px floor, and 40px under
+  `(pointer: coarse)`, which also raises `.btn`, `.input`, `.tab` and checkboxes. Icon-only controls
+  need a real `aria-label`: the connection badge hides its text below `sm` and had no accessible name
+  at all until one was added.
+- `MessagesPanel` is single-pane below `lg` — the inbox until a thread is picked, then the conversation
+  with a back chevron — rather than stacking a live list above a dead "Select a conversation" pane.
+
+`audit.mjs` (in the scratchpad) walks every tab of every role at 360/390/768/1024/1280, with touch
+emulated at and below 1024 so the coarse-pointer rules actually apply, and reports horizontal overflow,
+off-screen elements and small tap targets. It is at zero findings; keep it there.
+
 ## Conventions
 - Currency `peso()` (en-PH, ₱). Dates: date-only fields are `YYYY-MM-DD` strings (`ymd`), timestamps are ISO.
 - Generic drug names (R.A. 6675). Prescription signature block shows PRC, PTR and S2 numbers.
 - Colors: teal = doctor/clinical, indigo = patient, sky = staff. Status tones live in `STATUS_TONE`.
 - Never define components inside other components' render bodies (caused remount/focus loss once — fixed).
+- A new table gets `.th-wide`/`.td-wide` on its secondary columns and a `.cell-fold` summary, or it will
+  push its action column off a phone screen.
 - Overlays share `useEscapeKey`/`escapeStack` so Escape closes only the topmost one. Any new overlay must
   use it rather than its own `keydown` listener, or it will close everything stacked beneath it.
 - Keep `@media print` approach: anything printable must render through `PrintCenter` → `#print-root`.

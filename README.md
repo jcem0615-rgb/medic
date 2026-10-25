@@ -109,6 +109,22 @@ syncs across tabs through the `storage` event.
 - **Printing** — prescriptions, medical certificates, medical abstracts and billing statements all print
   on the clinic letterhead. Use the print dialog to save as PDF.
 
+## On a phone or tablet
+
+The app is one layout that adapts rather than a desktop build with a mobile fallback:
+
+- Below 1024px every section sits behind a **hamburger** that opens a full-width list of them, each
+  with its unread or pending count, so the front desk reaches Billing from a phone in two taps. The
+  tab row returns on a laptop.
+- The tables — pharmacy, billing, accounts, patient directory — fold their secondary columns into the
+  first cell on a phone instead of scrolling sideways, so the price, the stock and the action button
+  are all on screen at 360px.
+- Messages is one pane on a phone: the inbox, then the conversation with a back arrow.
+- Document previews scale to fit the screen, and buttons and inputs grow on touch screens.
+
+Try it with your browser's device toolbar, or open the deployed app on your phone and install it to
+the Home Screen.
+
 ## Stack
 
 React 18, Vite 5, Tailwind CSS 3, lucide-react. The app is a single `src/App.jsx` by design, divided

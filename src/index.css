@@ -34,22 +34,27 @@
 }
 
 @layer components {
+  /* min-w-0 matters: a card is almost always a grid or flex item, and anything
+     inside it that is `truncate` (white-space: nowrap) reports a min-content
+     width of the full untruncated string. A grid item defaults to
+     min-width: auto, so without this one declaration a long chief complaint
+     widens the whole column past the viewport instead of ellipsing. */
   .card {
-    @apply rounded-xl border border-slate-200 bg-white shadow-sm;
+    @apply min-w-0 rounded-xl border border-slate-200 bg-white shadow-sm;
   }
   .card-pad {
     @apply p-4 sm:p-5;
   }
   .card-head {
-    @apply flex items-center justify-between gap-3 border-b border-slate-100 px-4 py-3 sm:px-5;
+    @apply flex flex-wrap items-center justify-between gap-x-3 gap-y-2 border-b border-slate-100 px-4 py-3 sm:px-5;
   }
   .card-title {
-    @apply text-sm font-semibold text-slate-900;
+    @apply min-w-0 text-sm font-semibold text-slate-900;
   }
 
   .btn {
-    @apply inline-flex select-none items-center justify-center gap-2 rounded-lg px-3 py-2 text-sm font-semibold
-           transition active:scale-[.98] disabled:pointer-events-none disabled:opacity-50;
+    @apply inline-flex select-none items-center justify-center gap-2 whitespace-nowrap rounded-lg px-3 py-2
+           text-sm font-semibold transition active:scale-[.98] disabled:pointer-events-none disabled:opacity-50;
   }
   .btn-primary {
     @apply btn bg-teal-600 text-white shadow-sm hover:bg-teal-700;
@@ -73,6 +78,68 @@
     @apply px-2.5 py-1.5 text-xs;
   }
 
+  /* A4 document previews. `zoom` (unlike `transform: scale`) shrinks the layout
+     box too, so a 210mm page fits a phone without pushing the document sideways.
+     Print is unaffected: printing renders #print-root, never these previews. */
+  .doc-zoom {
+    zoom: 0.42;
+  }
+  @media (min-width: 420px) {
+    .doc-zoom {
+      zoom: 0.5;
+    }
+  }
+  @media (min-width: 640px) {
+    .doc-zoom {
+      zoom: 0.72;
+    }
+  }
+  @media (min-width: 1024px) {
+    .doc-zoom {
+      zoom: 0.88;
+    }
+  }
+  @media (min-width: 1280px) {
+    .doc-zoom {
+      zoom: 1;
+    }
+  }
+
+  /* On touch screens the compact desktop controls are too small to hit
+     reliably, so give every tappable thing a 40px-ish target. Pointer-based
+     devices keep the tighter spacing. */
+  @media (pointer: coarse) {
+    .btn,
+    .btn-sm {
+      @apply min-h-[40px];
+    }
+    .badge {
+      @apply py-1;
+    }
+    .input,
+    select.input {
+      @apply min-h-[42px];
+    }
+    .tab {
+      @apply min-h-[44px];
+    }
+    input[type='checkbox'] {
+      @apply h-5 w-5;
+    }
+    /* Coarse pointers get a full finger-sized target. */
+    button:has(> svg:only-child) {
+      @apply min-h-[40px] min-w-[40px];
+    }
+  }
+
+  /* Icon-only buttons (a lone <svg> inside) are written for a mouse all over the
+     app — close buttons, row actions, steppers. One rule gives every one of them
+     a usable target without touching buttons that carry a label and so already
+     have padding. */
+  button:has(> svg:only-child) {
+    @apply inline-flex min-h-[32px] min-w-[32px] items-center justify-center;
+  }
+
   .input {
     @apply w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900
            placeholder:text-slate-400 focus:border-teal-500 focus:outline-none focus:ring-2 focus:ring-teal-500/30;
@@ -94,19 +161,36 @@
     @apply inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-semibold;
   }
 
+  /* The doctor has nine sections; at lg the whole row has to fit 1024px, so the
+     gap and padding tighten there and relax again on a laptop. */
   .tab {
-    @apply inline-flex items-center gap-2 whitespace-nowrap border-b-2 border-transparent px-3 py-2.5 text-sm
-           font-medium text-slate-500 transition hover:text-slate-800;
+    @apply inline-flex items-center gap-1.5 whitespace-nowrap border-b-2 border-transparent px-2.5 py-2.5
+           text-sm font-medium text-slate-500 transition hover:text-slate-800 xl:gap-2 xl:px-3;
   }
   .tab-active {
     @apply border-current text-current;
   }
 
   .th {
-    @apply px-3 py-2 text-left text-xs font-semibold uppercase tracking-wide text-slate-500;
+    @apply px-2 py-2 text-left text-xs font-semibold uppercase tracking-wide text-slate-500 sm:px-3;
   }
   .td {
-    @apply px-3 py-2.5 text-sm text-slate-700;
+    @apply px-2 py-2.5 text-sm text-slate-700 sm:px-3;
+  }
+  /* A phone cannot show a six-column table without pushing the action column
+     off the side of the screen. Columns marked `-wide` drop below md, and the
+     data they carried is repeated in the first cell by `.cell-fold`, which only
+     shows at those same narrow widths — so nothing is lost and nothing is
+     duplicated on a laptop. */
+  .th-wide,
+  .td-wide {
+    @apply hidden md:table-cell;
+  }
+  /* No separators between the folded facts: each one wraps onto its own line at
+     this width, and a leading "·" would travel with it. They read fine on the
+     gap alone — "0918 553 1140", "PH 12-887654321-0", "seen Sep 17, 2026". */
+  .cell-fold {
+    @apply mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-500 md:hidden;
   }
   .row-hover {
     @apply transition hover:bg-slate-50;

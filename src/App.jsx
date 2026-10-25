@@ -15,9 +15,9 @@ import React, {
 import { createPortal } from 'react-dom';
 import {
   Activity, AlertTriangle, ArrowLeft, ArrowRight, BadgeCheck, Banknote, Bell, BellRing, Boxes,
-  Calendar, CalendarClock, CalendarPlus, CheckCircle2, ChevronDown, ChevronRight, ClipboardList,
+  Calendar, CalendarClock, CalendarPlus, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, ClipboardList,
   Clock, CloudOff, CreditCard, Download, FileText, FlaskConical, Heart, Home, Hospital, Info,
-  LayoutGrid, LogIn, LogOut, Mail, MapPin, MessageSquare, Minus, Monitor, Package, PackagePlus,
+  LayoutGrid, LogIn, LogOut, Mail, MapPin, Menu, MessageSquare, Minus, Monitor, Package, PackagePlus,
   PhilippinePeso, Phone, Pill, Plus, Printer, QrCode, RefreshCw, Search, Send, Settings2, Share2,
   ShieldCheck, Smartphone, Stethoscope, Syringe, Thermometer, Trash2, TrendingUp, Upload, User, UserPlus,
   Users, Video, Wallet, Wifi, WifiOff, X, Zap,
@@ -2040,11 +2040,12 @@ function PwaStatus() {
         type="button"
         onClick={() => setOpen((v) => !v)}
         className={cx(
-          'badge border transition',
+          'badge min-h-[34px] justify-center border transition sm:min-h-0',
           online
             ? 'border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100'
             : 'border-amber-200 bg-amber-50 text-amber-800 hover:bg-amber-100',
         )}
+        aria-label={`App status — ${online ? 'online' : 'offline'}${outbox > 0 ? `, ${outbox} queued` : ''}`}
         aria-haspopup="dialog"
         aria-expanded={open}
       >
@@ -2299,10 +2300,69 @@ function Header() {
 
 function SubNav({ tabs, active, onChange, role }) {
   const theme = ROLE_THEME[role];
+  const [open, setOpen] = useState(false);
+  const current = tabs.find((t) => t.id === active) ?? tabs[0];
+  const pending = tabs.reduce((n, t) => n + (t.id === active ? 0 : t.count || 0), 0);
+
+  /* Close the drawer on Escape, and whenever the viewport grows past the
+     breakpoint where the full tab row comes back. */
+  useEscapeKey(() => setOpen(false), open);
+  useEffect(() => {
+    if (!open) return undefined;
+    const mq = window.matchMedia('(min-width: 1024px)');
+    const onChangeMq = (e) => e.matches && setOpen(false);
+    mq.addEventListener('change', onChangeMq);
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => {
+      mq.removeEventListener('change', onChangeMq);
+      document.body.style.overflow = prev;
+    };
+  }, [open]);
+
+  const pick = (id) => {
+    onChange(id);
+    setOpen(false);
+  };
+
   return (
     <div className="no-print border-b border-slate-200 bg-white">
       <div className="mx-auto max-w-7xl px-2 sm:px-4">
-        <nav className="thin-scroll flex gap-1 overflow-x-auto" aria-label="Section">
+        {/* Phones and small tablets: one button that opens every section. */}
+        <div className="flex items-center gap-2 py-1.5 lg:hidden">
+          <button
+            type="button"
+            onClick={() => setOpen(true)}
+            aria-expanded={open}
+            aria-haspopup="menu"
+            aria-label={`Open sections menu · ${current?.label ?? ''}`}
+            className="flex min-h-[44px] flex-1 items-center gap-2.5 rounded-lg px-2 text-left transition active:bg-slate-100"
+          >
+            <span className="relative grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-slate-100 text-slate-700">
+              <Menu className="h-5 w-5" />
+              {pending > 0 && (
+                <span className="absolute -right-1 -top-1 grid h-4 min-w-[1rem] place-items-center rounded-full bg-rose-600 px-1 text-[10px] font-bold text-white">
+                  {pending}
+                </span>
+              )}
+            </span>
+            <span className="min-w-0 flex-1">
+              <span className="block text-[10px] font-semibold uppercase tracking-wide text-slate-400">Section</span>
+              <span className={cx('flex items-center gap-1.5 truncate text-sm font-bold', theme.text)}>
+                {current?.label}
+                {current?.count > 0 && (
+                  <span className={cx('nums rounded-full px-1.5 py-0.5 text-[10px] font-bold', theme.bgSoft, theme.text)}>
+                    {current.count}
+                  </span>
+                )}
+              </span>
+            </span>
+            <ChevronDown className="h-4 w-4 shrink-0 text-slate-400" />
+          </button>
+        </div>
+
+        {/* Tablet landscape and up: the full row, still scrollable if it is tight. */}
+        <nav className="thin-scroll hidden gap-1 overflow-x-auto lg:flex" aria-label="Section">
           {tabs.map((t) => {
             const Icon = t.icon;
             const isActive = t.id === active;
@@ -2331,6 +2391,64 @@ function SubNav({ tabs, active, onChange, role }) {
           })}
         </nav>
       </div>
+
+      {open && (
+        <div className="fixed inset-0 z-40 lg:hidden">
+          <div className="absolute inset-0 animate-fade-in bg-slate-900/40" onClick={() => setOpen(false)} />
+          <div
+            role="menu"
+            aria-label="Sections"
+            className="absolute inset-x-0 top-0 max-h-[85vh] overflow-y-auto rounded-b-2xl bg-white pb-2 shadow-2xl animate-pop-in"
+            style={{ paddingTop: 'env(safe-area-inset-top)' }}
+          >
+            <div className="flex items-center justify-between border-b border-slate-100 px-4 py-3">
+              <span className="text-sm font-bold text-slate-900">Go to</span>
+              <button
+                type="button"
+                onClick={() => setOpen(false)}
+                className="grid h-9 w-9 place-items-center rounded-lg text-slate-400 transition hover:bg-slate-100 hover:text-slate-700"
+                aria-label="Close menu"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+            <ul className="p-2">
+              {tabs.map((t) => {
+                const Icon = t.icon;
+                const isActive = t.id === active;
+                return (
+                  <li key={t.id}>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onClick={() => pick(t.id)}
+                      aria-current={isActive ? 'page' : undefined}
+                      className={cx(
+                        'flex min-h-[48px] w-full items-center gap-3 rounded-xl px-3 text-left transition',
+                        isActive ? cx(theme.bgSoft, theme.text) : 'text-slate-700 active:bg-slate-100',
+                      )}
+                    >
+                      <Icon className="h-5 w-5 shrink-0" />
+                      <span className="flex-1 text-sm font-semibold">{t.label}</span>
+                      {t.count > 0 && (
+                        <span
+                          className={cx(
+                            'nums rounded-full px-2 py-0.5 text-xs font-bold',
+                            isActive ? 'bg-white/70' : 'bg-slate-100 text-slate-600',
+                          )}
+                        >
+                          {t.count}
+                        </span>
+                      )}
+                      {isActive && <CheckCircle2 className="h-4 w-4 shrink-0" />}
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -2799,13 +2917,13 @@ function AccountsPanel({ accent = 'teal' }) {
 
       <div className="card overflow-hidden">
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[680px]">
+          <table className="w-full md:min-w-[680px]">
             <thead className="border-b border-slate-100 bg-slate-50">
               <tr>
                 <th className="th">User</th>
-                <th className="th">Signs in with</th>
-                <th className="th">Status</th>
-                <th className="th">Last sign-in</th>
+                <th className="th th-wide">Signs in with</th>
+                <th className="th th-wide">Status</th>
+                <th className="th th-wide">Last sign-in</th>
                 <th className="th text-right">Password</th>
               </tr>
             </thead>
@@ -2823,12 +2941,23 @@ function AccountsPanel({ accent = 'teal' }) {
                         <div className="text-xs capitalize text-slate-500">{u.kind}</div>
                       </div>
                     </div>
+                    <div className="cell-fold">
+                      <span className="w-full truncate">{u.email}</span>
+                      <span className="nums">{u.mobile}</span>
+                      {u.mustChangePassword ? (
+                        <Badge tone="bg-amber-100 text-amber-800">
+                          {u.passwordResetAt ? 'Reset — must change' : 'Default password'}
+                        </Badge>
+                      ) : (
+                        <Badge tone="bg-emerald-100 text-emerald-700" icon={ShieldCheck}>Set</Badge>
+                      )}
+                    </div>
                   </td>
-                  <td className="td">
+                  <td className="td td-wide">
                     <div className="truncate text-xs">{u.email}</div>
                     <div className="nums text-xs text-slate-500">{u.mobile}</div>
                   </td>
-                  <td className="td">
+                  <td className="td td-wide">
                     {u.mustChangePassword ? (
                       <Badge tone="bg-amber-100 text-amber-800">
                         {u.passwordResetAt ? 'Reset — must change' : 'Default password'}
@@ -2837,7 +2966,7 @@ function AccountsPanel({ accent = 'teal' }) {
                       <Badge tone="bg-emerald-100 text-emerald-700" icon={ShieldCheck}>Set</Badge>
                     )}
                   </td>
-                  <td className="td text-xs">
+                  <td className="td td-wide text-xs">
                     {u.lastLoginAt ? fmtDateTime(u.lastLoginAt) : <span className="text-slate-400">never</span>}
                   </td>
                   <td className="td text-right">
@@ -3114,15 +3243,18 @@ function StatCard({ icon: Icon, label, value, sub, tone = 'slate', onClick }) {
     <Tag
       type={onClick ? 'button' : undefined}
       onClick={onClick}
-      className={cx('card card-pad flex items-start gap-3 text-left', onClick && 'transition hover:shadow-md')}
+      className={cx(
+        'card card-pad flex flex-col items-start gap-2 text-left sm:flex-row sm:gap-3',
+        onClick && 'transition hover:shadow-md',
+      )}
     >
       <span className={cx('grid h-9 w-9 shrink-0 place-items-center rounded-lg', tones[tone])}>
         <Icon className="h-5 w-5" />
       </span>
-      <div className="min-w-0">
+      <div className="min-w-0 max-w-full">
         <div className="text-xs font-medium text-slate-500">{label}</div>
-        <div className="nums truncate text-xl font-bold leading-tight text-slate-900">{value}</div>
-        {sub && <div className="truncate text-[11px] text-slate-500">{sub}</div>}
+        <div className="nums truncate text-lg font-bold leading-tight text-slate-900 sm:text-xl">{value}</div>
+        {sub && <div className="line-clamp-2 text-[11px] text-slate-500">{sub}</div>}
       </div>
     </Tag>
   );
@@ -3508,6 +3640,12 @@ function MessagesPanel({ accent = 'teal' }) {
   const endRef = useRef(null);
 
   const active = threads.find((t) => t.id === activeId) ?? null;
+  /* Which of the two panes a phone is showing. */
+  const pane = composing || !!active;
+  const backToInbox = () => {
+    setActiveId(null);
+    setComposing(false);
+  };
 
   /* Opening a thread clears its unread marks — an autoread, so keep it silent. */
   useEffect(() => {
@@ -3606,8 +3744,8 @@ function MessagesPanel({ accent = 'teal' }) {
       </div>
 
       <div className="grid gap-4 lg:grid-cols-[320px,1fr]">
-        {/* Thread list */}
-        <section className="card overflow-hidden">
+        {/* Thread list — the only pane on a phone until a conversation is open. */}
+        <section className={cx('card overflow-hidden', pane && 'hidden lg:block')}>
           <div className="card-head">
             <h2 className="card-title">Inbox</h2>
             <Badge tone="bg-slate-100 text-slate-500">{threads.length}</Badge>
@@ -3654,10 +3792,17 @@ function MessagesPanel({ accent = 'teal' }) {
         </section>
 
         {/* Conversation / composer */}
-        <section className="card flex min-h-[28rem] flex-col overflow-hidden">
+        <section className={cx('card flex min-h-[28rem] flex-col overflow-hidden', !pane && 'hidden lg:flex')}>
           {composing ? (
             <>
-              <div className="card-head"><h2 className="card-title">New message</h2></div>
+              <div className="card-head">
+                <h2 className="card-title flex items-center gap-1.5">
+                  <button type="button" onClick={backToInbox} className="-ml-1 text-slate-400 lg:hidden" aria-label="Back to inbox">
+                    <ChevronLeft className="h-5 w-5" />
+                  </button>
+                  New message
+                </h2>
+              </div>
               <div className="space-y-3 p-4">
                 <Field label="To" required>
                   <select className="input" value={toKey} onChange={(e) => setToKey(e.target.value)}>
@@ -3697,7 +3842,10 @@ function MessagesPanel({ accent = 'teal' }) {
           ) : active ? (
             <>
               <div className="card-head">
-                <div className="flex min-w-0 items-center gap-2.5">
+                <div className="flex min-w-0 items-center gap-1.5 sm:gap-2.5">
+                  <button type="button" onClick={backToInbox} className="-ml-1 shrink-0 text-slate-400 lg:hidden" aria-label="Back to inbox">
+                    <ChevronLeft className="h-5 w-5" />
+                  </button>
                   <Avatar name={partyName(state, otherParty(active, me))} tone={PARTY_TONE[otherParty(active, me)?.kind]} size="h-8 w-8 text-[10px]" />
                   <div className="min-w-0">
                     <h2 className="truncate text-sm font-bold text-slate-900">{partyName(state, otherParty(active, me))}</h2>
@@ -4524,9 +4672,9 @@ function PrintCenter({ job, onClose }) {
           </div>
         }
       >
-        <div className="bg-slate-200 p-4 sm:p-6">
-          <div className="mx-auto max-w-[210mm] overflow-hidden rounded shadow-lg ring-1 ring-slate-300">
-            {job.doc}
+        <div className="bg-slate-200 p-2 sm:p-6">
+          <div className="doc-zoom mx-auto w-full max-w-[210mm]">
+            <div className="overflow-hidden rounded shadow-lg ring-1 ring-slate-300">{job.doc}</div>
           </div>
         </div>
       </Modal>
@@ -4641,7 +4789,7 @@ function PatientChart({ patientId, open, onClose, onCheckIn }) {
         {patient.pwdId && <Badge tone="bg-emerald-100 text-emerald-700" icon={BadgeCheck}>PWD</Badge>}
       </div>
 
-      <div className="mb-4 flex gap-1 overflow-x-auto rounded-lg bg-white p-1 shadow-sm">
+      <div className="thin-scroll mb-4 flex gap-1 overflow-x-auto rounded-lg bg-white p-1 shadow-sm">
         {tabs.map((t) => {
           const Icon = t.icon;
           return (
@@ -5443,9 +5591,9 @@ function DoctorSettings() {
         </button>
       </div>
 
-      <div className="grid gap-4 xl:grid-cols-[minmax(0,420px),1fr]">
+      <div className="grid gap-4 [&>*]:min-w-0 xl:grid-cols-[minmax(0,420px),1fr]">
         <div className="space-y-4">
-          <div className="flex gap-1 overflow-x-auto rounded-lg bg-white p-1 shadow-sm">
+          <div className="thin-scroll flex gap-1 overflow-x-auto rounded-lg bg-white p-1 shadow-sm">
             {tabs.map((t) => {
               const Icon = t.icon;
               return (
@@ -5620,9 +5768,13 @@ function DoctorSettings() {
             <h2 className="card-title">Preview</h2>
             <Badge tone="bg-slate-100 text-slate-500">sample patient &amp; medicines</Badge>
           </div>
-          <div className="thin-scroll max-h-[40rem] overflow-auto bg-slate-200 p-4">
-            <div className="mx-auto max-w-[210mm] overflow-hidden rounded shadow-lg ring-1 ring-slate-300">
-              <PrescriptionDoc encounter={SAMPLE_RX_ENCOUNTER} patient={samplePatient} doctor={doctor} />
+          {/* The document is a fixed A4 width; shrink the whole thing on small
+              screens rather than letting it push the page sideways. */}
+          <div className="thin-scroll max-h-[40rem] overflow-auto bg-slate-200 p-2 sm:p-4">
+            <div className="doc-zoom mx-auto w-full max-w-[210mm]">
+              <div className="overflow-hidden rounded shadow-lg ring-1 ring-slate-300">
+                <PrescriptionDoc encounter={SAMPLE_RX_ENCOUNTER} patient={samplePatient} doctor={doctor} />
+              </div>
             </div>
           </div>
         </section>
@@ -5785,7 +5937,7 @@ function DoctorOverview({ queue, waiting, onCallIn, onOpenChart }) {
               const patient = findBy(state.patients, q.patientId);
               const wait = minsSince(q.checkedInAt);
               return (
-                <div key={q.id} className="flex items-center gap-3 px-4 py-3">
+                <div key={q.id} className="flex flex-wrap items-center gap-x-3 gap-y-2 px-4 py-3">
                   <span
                     className={cx(
                       'nums grid h-9 w-9 shrink-0 place-items-center rounded-lg text-sm font-bold',
@@ -5801,7 +5953,7 @@ function DoctorOverview({ queue, waiting, onCallIn, onOpenChart }) {
                   <button
                     type="button"
                     onClick={() => onOpenChart(q.patientId)}
-                    className="min-w-0 flex-1 text-left"
+                    className="min-w-0 flex-1 basis-40 text-left"
                   >
                     <div className="flex items-center gap-1.5">
                       <span className="truncate text-sm font-semibold text-slate-900">{patientName(patient)}</span>
@@ -7645,7 +7797,7 @@ function ReceptionQueue({ onOpenChart, checkInFor, setCheckInFor }) {
         <section className="card lg:col-span-2">
           <div className="card-head">
             <h2 className="card-title">Today&apos;s queue</h2>
-            <span className="text-xs text-slate-500">{done.length} completed · {todayQueue.length} total</span>
+            <span className="shrink-0 text-xs text-slate-500">{done.length} completed · {todayQueue.length} total</span>
           </div>
           <div className="divide-y divide-slate-100">
             {todayQueue.length === 0 && (
@@ -7664,7 +7816,7 @@ function ReceptionQueue({ onOpenChart, checkInFor, setCheckInFor }) {
               const patient = findBy(state.patients, q.patientId);
               const doctor = findBy(state.doctors, q.doctorId);
               return (
-                <div key={q.id} className="flex flex-wrap items-center gap-3 px-4 py-3">
+                <div key={q.id} className="flex flex-wrap items-center gap-x-3 gap-y-2 px-4 py-3">
                   <span
                     className={cx(
                       'nums grid h-10 w-10 shrink-0 place-items-center rounded-lg text-sm font-bold',
@@ -7678,7 +7830,7 @@ function ReceptionQueue({ onOpenChart, checkInFor, setCheckInFor }) {
                     {q.number}
                   </span>
 
-                  <button type="button" onClick={() => onOpenChart(q.patientId)} className="min-w-0 flex-1 text-left">
+                  <button type="button" onClick={() => onOpenChart(q.patientId)} className="min-w-0 flex-1 basis-40 text-left">
                     <span className="flex flex-wrap items-center gap-1.5">
                       <span className="truncate text-sm font-semibold text-slate-900">{patientName(patient)}</span>
                       {q.priority && <Badge tone="bg-rose-100 text-rose-700">Priority</Badge>}
@@ -8254,13 +8406,13 @@ function PatientDirectory({ onOpenChart, onCheckIn }) {
           <Badge tone="bg-slate-100 text-slate-500">{patients.length} registered</Badge>
         </div>
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[640px]">
+          <table className="w-full md:min-w-[640px]">
             <thead className="border-b border-slate-100 bg-slate-50">
               <tr>
                 <th className="th">Patient</th>
-                <th className="th">Contact</th>
-                <th className="th">PhilHealth</th>
-                <th className="th">Last visit</th>
+                <th className="th th-wide">Contact</th>
+                <th className="th th-wide">PhilHealth</th>
+                <th className="th th-wide">Last visit</th>
                 <th className="th text-right">Actions</th>
               </tr>
             </thead>
@@ -8282,23 +8434,39 @@ function PatientDirectory({ onOpenChart, onCheckIn }) {
                       <div className="flex items-center gap-2.5">
                         <Avatar name={patientName(p)} tone="bg-sky-100 text-sky-700" size="h-8 w-8 text-[10px]" />
                         <div className="min-w-0">
-                          <div className="flex items-center gap-1.5">
-                            <span className="truncate font-semibold text-slate-900">{patientName(p)}</span>
+                          <div className="flex min-w-0 items-center gap-1.5">
+                            <span className="min-w-0 truncate font-semibold text-slate-900">{patientName(p)}</span>
                             {(p.allergies ?? []).length > 0 && (
                               <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-rose-500" aria-label="Has allergies" />
                             )}
-                            {isSenior(p) && <Badge tone="bg-emerald-100 text-emerald-700">SC</Badge>}
-                            {p.pwdId && <Badge tone="bg-emerald-100 text-emerald-700">PWD</Badge>}
+                            {isSenior(p) && (
+                              <Badge tone="bg-emerald-100 text-emerald-700" className="hidden sm:inline-flex">SC</Badge>
+                            )}
+                            {p.pwdId && (
+                              <Badge tone="bg-emerald-100 text-emerald-700" className="hidden sm:inline-flex">PWD</Badge>
+                            )}
                           </div>
                           <div className="truncate text-xs text-slate-500">
                             {p.id} · {ageLabel(p.dob)} · {p.sex}
                           </div>
                         </div>
                       </div>
+                      <div className="cell-fold">
+                        {isSenior(p) && <Badge tone="bg-emerald-100 text-emerald-700">SC</Badge>}
+                        {p.pwdId && <Badge tone="bg-emerald-100 text-emerald-700">PWD</Badge>}
+                        <span className="nums">{p.mobile}</span>
+                        {p.philhealth && <span className="nums">PH {p.philhealth}</span>}
+                        <span>{last ? `seen ${fmtDate(last.date)}` : 'never seen'}</span>
+                        {balance > 0 && (
+                          <span className="nums rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-bold text-amber-800">
+                            {peso(balance)} due
+                          </span>
+                        )}
+                      </div>
                     </td>
-                    <td className="td nums text-xs">{p.mobile}</td>
-                    <td className="td nums text-xs">{p.philhealth || '—'}</td>
-                    <td className="td text-xs">
+                    <td className="td td-wide nums text-xs">{p.mobile}</td>
+                    <td className="td td-wide nums text-xs">{p.philhealth || '—'}</td>
+                    <td className="td td-wide text-xs">
                       {last ? fmtDate(last.date) : <span className="text-slate-400">never seen</span>}
                       {balance > 0 && (
                         <span className="nums ml-1.5 rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-bold text-amber-800">
@@ -8307,7 +8475,7 @@ function PatientDirectory({ onOpenChart, onCheckIn }) {
                       )}
                     </td>
                     <td className="td">
-                      <div className="flex justify-end gap-1.5">
+                      <div className="flex flex-wrap justify-end gap-1.5">
                         <button type="button" className="btn-ghost btn-sm" onClick={() => onOpenChart(p.id)}>
                           Chart
                         </button>
@@ -8450,14 +8618,14 @@ function Pharmacy({ accent = 'sky' }) {
 
       <div className="card overflow-hidden">
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[720px]">
+          <table className="w-full md:min-w-[720px]">
             <thead className="border-b border-slate-100 bg-slate-50">
               <tr>
                 <th className="th">Medication</th>
-                <th className="th">Category</th>
+                <th className="th th-wide">Category</th>
                 <th className="th text-right">Price</th>
-                <th className="th text-right">On hand</th>
-                <th className="th">Status</th>
+                <th className="th th-wide text-right">On hand</th>
+                <th className="th th-wide">Status</th>
                 <th className="th text-right">Restock</th>
               </tr>
             </thead>
@@ -8472,8 +8640,13 @@ function Pharmacy({ accent = 'sky' }) {
                     <td className="td">
                       <div className="font-semibold text-slate-900">{i.name} {i.strength}</div>
                       <div className="text-xs text-slate-500">{i.form} · {i.id}</div>
+                      <div className="cell-fold">
+                        <span>{i.category}</span>
+                        <span className="nums">{i.stock} {i.unit}</span>
+                        <StatusBadge status={status} />
+                      </div>
                     </td>
-                    <td className="td text-xs">{i.category}</td>
+                    <td className="td td-wide text-xs">{i.category}</td>
                     <td className="td text-right">
                       {/* Inline price edit — the front desk adjusts these often. */}
                       {editingPrice === i.id ? (
@@ -8498,7 +8671,7 @@ function Pharmacy({ accent = 'sky' }) {
                       ) : (
                         <button
                           type="button"
-                          className="nums rounded px-1.5 py-0.5 font-semibold text-slate-800 transition hover:bg-slate-100"
+                          className="nums inline-flex min-h-[34px] items-center rounded px-2 py-1 font-semibold text-slate-800 transition hover:bg-slate-100"
                           onClick={() => {
                             setEditingPrice(i.id);
                             setPriceDraft(String(i.price));
@@ -8509,21 +8682,23 @@ function Pharmacy({ accent = 'sky' }) {
                         </button>
                       )}
                     </td>
-                    <td className="td nums text-right font-semibold">
+                    <td className="td td-wide nums text-right font-semibold">
                       {i.stock} <span className="text-xs font-normal text-slate-400">{i.unit}</span>
                       <div className="text-[10px] font-normal text-slate-400">reorder at {i.reorderLevel}</div>
                     </td>
-                    <td className="td"><StatusBadge status={status} /></td>
+                    <td className="td td-wide"><StatusBadge status={status} /></td>
                     <td className="td text-right">
                       <button
                         type="button"
                         className="btn-ghost btn-sm"
+                        aria-label={`Receive stock for ${i.name} ${i.strength}`}
                         onClick={() => {
                           setRestocking(i);
                           setRestockQty('');
                         }}
                       >
-                        <Plus className="h-3.5 w-3.5" /> Receive
+                        <Plus className="h-3.5 w-3.5" />
+                        <span className="hidden sm:inline">Receive</span>
                       </button>
                     </td>
                   </tr>
@@ -8699,14 +8874,14 @@ function Billing({ accent = 'sky' }) {
 
       <div className="card overflow-hidden">
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[680px]">
+          <table className="w-full md:min-w-[680px]">
             <thead className="border-b border-slate-100 bg-slate-50">
               <tr>
-                <th className="th">Statement</th>
+                <th className="th th-wide">Statement</th>
                 <th className="th">Patient</th>
-                <th className="th">Date</th>
+                <th className="th th-wide">Date</th>
                 <th className="th text-right">Amount</th>
-                <th className="th">Status</th>
+                <th className="th th-wide">Status</th>
                 <th className="th text-right">Action</th>
               </tr>
             </thead>
@@ -8727,7 +8902,7 @@ function Billing({ accent = 'sky' }) {
                 const patient = findBy(state.patients, inv.patientId);
                 return (
                   <tr key={inv.id} className="row-hover">
-                    <td className="td nums font-semibold text-slate-900">{inv.id}</td>
+                    <td className="td td-wide nums font-semibold text-slate-900">{inv.id}</td>
                     <td className="td">
                       <div className="flex items-center gap-2">
                         <span className="truncate">{patientName(patient)}</span>
@@ -8738,10 +8913,15 @@ function Billing({ accent = 'sky' }) {
                         )}
                       </div>
                       <div className="text-xs text-slate-500">{inv.items.length} items</div>
+                      <div className="cell-fold">
+                        <span className="nums font-semibold text-slate-600">{inv.id}</span>
+                        <span>{fmtDate(inv.date)}</span>
+                        <StatusBadge status={inv.status} />
+                      </div>
                     </td>
-                    <td className="td text-xs">{fmtDate(inv.date)}</td>
+                    <td className="td td-wide text-xs">{fmtDate(inv.date)}</td>
                     <td className="td nums text-right font-bold text-slate-900">{peso(totals.total)}</td>
-                    <td className="td"><StatusBadge status={inv.status} /></td>
+                    <td className="td td-wide"><StatusBadge status={inv.status} /></td>
                     <td className="td text-right">
                       <button
                         type="button"
