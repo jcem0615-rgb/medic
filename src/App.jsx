@@ -7,6 +7,7 @@ import React, {
   useCallback,
   useContext,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useReducer,
   useRef,
@@ -3089,6 +3090,71 @@ function AccountsPanel({ accent = 'teal' }) {
 
 /* ===== 5. UI primitives ========================================================= */
 
+/* A4 document preview.
+
+   The document components render at a fixed 210mm — the real printed width — so a
+   phone has to shrink the whole page. This measures the container and applies a
+   transform rather than using CSS `zoom`: `zoom` resolves percentage widths
+   against the zoomed coordinate space, and engines disagree about that, which
+   left the preview oversized on some phones. A transform is deterministic
+   everywhere. The wrapper takes the *scaled* height, so there is neither
+   clipping nor dead space under the page, and `overflow-hidden` means a browser
+   that somehow fails to scale still cannot push the page sideways. */
+const A4_WIDTH_PX = 793.7; /* 210mm at 96dpi */
+
+function DocPreview({ children }) {
+  const outerRef = useRef(null);
+  const innerRef = useRef(null);
+  const [box, setBox] = useState({ scale: 1, height: 0, offset: 0 });
+
+  useLayoutEffect(() => {
+    const outer = outerRef.current;
+    const inner = innerRef.current;
+    if (!outer || !inner) return undefined;
+
+    const measure = () => {
+      const available = outer.clientWidth;
+      if (!available) return;
+      const scale = Math.min(1, available / A4_WIDTH_PX);
+      const next = {
+        /* Rounded so a repeated measurement produces an identical object and
+           React bails out — otherwise height changes could feed back through
+           the scrollbar into clientWidth and oscillate. */
+        scale: Math.round(scale * 1e4) / 1e4,
+        height: Math.round(inner.offsetHeight * scale),
+        offset: Math.round(Math.max(0, (available - A4_WIDTH_PX * scale) / 2)),
+      };
+      setBox((prev) =>
+        prev.scale === next.scale && prev.height === next.height && prev.offset === next.offset
+          ? prev
+          : next,
+      );
+    };
+
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(outer);
+    ro.observe(inner);
+    return () => ro.disconnect();
+  }, [children]);
+
+  return (
+    <div ref={outerRef} className="w-full overflow-hidden" style={{ height: box.height || undefined }}>
+      <div
+        ref={innerRef}
+        style={{
+          width: `${A4_WIDTH_PX}px`,
+          marginLeft: box.offset,
+          transform: `scale(${box.scale})`,
+          transformOrigin: 'top left',
+        }}
+      >
+        {children}
+      </div>
+    </div>
+  );
+}
+
 function Badge({ children, tone = 'bg-slate-100 text-slate-600', className, icon: Icon }) {
   return (
     <span className={cx('badge', tone, className)}>
@@ -4673,9 +4739,9 @@ function PrintCenter({ job, onClose }) {
         }
       >
         <div className="bg-slate-200 p-2 sm:p-6">
-          <div className="doc-zoom mx-auto w-full max-w-[210mm]">
+          <DocPreview>
             <div className="overflow-hidden rounded shadow-lg ring-1 ring-slate-300">{job.doc}</div>
-          </div>
+          </DocPreview>
         </div>
       </Modal>
       {/* The same document, portalled outside #root so @media print can isolate it. */}
@@ -4789,7 +4855,7 @@ function PatientChart({ patientId, open, onClose, onCheckIn }) {
         {patient.pwdId && <Badge tone="bg-emerald-100 text-emerald-700" icon={BadgeCheck}>PWD</Badge>}
       </div>
 
-      <div className="thin-scroll mb-4 flex gap-1 overflow-x-auto rounded-lg bg-white p-1 shadow-sm">
+      <div className="mb-4 flex flex-wrap gap-1 rounded-lg bg-white p-1 shadow-sm">
         {tabs.map((t) => {
           const Icon = t.icon;
           return (
@@ -4798,7 +4864,7 @@ function PatientChart({ patientId, open, onClose, onCheckIn }) {
               type="button"
               onClick={() => setTab(t.id)}
               className={cx(
-                'inline-flex flex-1 items-center justify-center gap-1.5 whitespace-nowrap rounded-md px-2 py-1.5 text-xs font-semibold transition',
+                'inline-flex shrink-0 items-center justify-center gap-1.5 whitespace-nowrap rounded-md px-2 py-1.5 text-xs font-semibold transition sm:flex-1',
                 tab === t.id ? 'bg-slate-900 text-white' : 'text-slate-500 hover:bg-slate-100',
               )}
             >
@@ -5593,7 +5659,7 @@ function DoctorSettings() {
 
       <div className="grid gap-4 [&>*]:min-w-0 xl:grid-cols-[minmax(0,420px),1fr]">
         <div className="space-y-4">
-          <div className="thin-scroll flex gap-1 overflow-x-auto rounded-lg bg-white p-1 shadow-sm">
+          <div className="flex flex-wrap gap-1 rounded-lg bg-white p-1 shadow-sm">
             {tabs.map((t) => {
               const Icon = t.icon;
               return (
@@ -5602,7 +5668,7 @@ function DoctorSettings() {
                   type="button"
                   onClick={() => setTab(t.id)}
                   className={cx(
-                    'inline-flex flex-1 items-center justify-center gap-1.5 whitespace-nowrap rounded-md px-2 py-1.5 text-xs font-semibold transition',
+                    'inline-flex shrink-0 items-center justify-center gap-1.5 whitespace-nowrap rounded-md px-2 py-1.5 text-xs font-semibold transition sm:flex-1',
                     tab === t.id ? 'bg-slate-900 text-white' : 'text-slate-500 hover:bg-slate-100',
                   )}
                 >
@@ -5771,11 +5837,11 @@ function DoctorSettings() {
           {/* The document is a fixed A4 width; shrink the whole thing on small
               screens rather than letting it push the page sideways. */}
           <div className="thin-scroll max-h-[40rem] overflow-auto bg-slate-200 p-2 sm:p-4">
-            <div className="doc-zoom mx-auto w-full max-w-[210mm]">
+            <DocPreview>
               <div className="overflow-hidden rounded shadow-lg ring-1 ring-slate-300">
                 <PrescriptionDoc encounter={SAMPLE_RX_ENCOUNTER} patient={samplePatient} doctor={doctor} />
               </div>
-            </div>
+            </DocPreview>
           </div>
         </section>
       </div>

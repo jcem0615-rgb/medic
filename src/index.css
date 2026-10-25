@@ -78,33 +78,6 @@
     @apply px-2.5 py-1.5 text-xs;
   }
 
-  /* A4 document previews. `zoom` (unlike `transform: scale`) shrinks the layout
-     box too, so a 210mm page fits a phone without pushing the document sideways.
-     Print is unaffected: printing renders #print-root, never these previews. */
-  .doc-zoom {
-    zoom: 0.42;
-  }
-  @media (min-width: 420px) {
-    .doc-zoom {
-      zoom: 0.5;
-    }
-  }
-  @media (min-width: 640px) {
-    .doc-zoom {
-      zoom: 0.72;
-    }
-  }
-  @media (min-width: 1024px) {
-    .doc-zoom {
-      zoom: 0.88;
-    }
-  }
-  @media (min-width: 1280px) {
-    .doc-zoom {
-      zoom: 1;
-    }
-  }
-
   /* On touch screens the compact desktop controls are too small to hit
      reliably, so give every tappable thing a 40px-ish target. Pointer-based
      devices keep the tighter spacing. */

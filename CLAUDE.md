@@ -208,9 +208,17 @@ Supporting rules, all in `index.css`:
 - **`.th-wide` / `.td-wide`** drop a column below `md`; **`.cell-fold`** shows the same facts inside
   the first cell at exactly those widths. Pharmacy, Billing, Accounts and the Patient directory all use
   this, so a phone sees every fact *and* reaches the action button with no sideways scrolling at 360px.
-- **`.doc-zoom`** scales the A4 document previews with `zoom`, not `transform: scale` — `zoom` shrinks
-  the layout box too, so a 210mm page fits a phone instead of pushing the document sideways. Print is
-  unaffected; printing renders `#print-root`, never these previews.
+- **`DocPreview`** scales the A4 document previews (Settings and `PrintCenter`). It measures its own
+  container with a `ResizeObserver` and applies `transform: scale`, then gives the wrapper the *scaled*
+  height so there is neither clipping nor dead space. An earlier attempt used CSS `zoom`: it does shrink
+  the layout box, but it resolves percentage widths against the zoomed coordinate space and engines
+  disagree about that, so the preview came out oversized on a real phone while measuring fine in
+  headless Chromium. Measuring is deterministic everywhere, and the wrapper's `overflow-hidden` means a
+  browser that failed to scale at all still could not push the page sideways. Print is unaffected;
+  printing renders `#print-root`, never these previews.
+- Sub-tab strips (chart tabs, settings tabs) are `flex-wrap` with `shrink-0` buttons that only become
+  `flex-1` from `sm`. With `flex-1` at phone width each tab got an equal third and the longest label was
+  clipped mid-word; now they keep their natural width and wrap to a second row.
 - `button:has(> svg:only-child)` gives every icon-only button a 32px floor, and 40px under
   `(pointer: coarse)`, which also raises `.btn`, `.input`, `.tab` and checkboxes. Icon-only controls
   need a real `aria-label`: the connection badge hides its text below `sm` and had no accessible name
