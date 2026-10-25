@@ -28,7 +28,7 @@ import {
 
 const STORE_KEY = 'mediclinic:v1';
 /* Bump whenever the state shape changes — older persisted state is discarded. */
-const SCHEMA_VERSION = 7;
+const SCHEMA_VERSION = 8;
 
 const CLINIC = {
   name: 'MediClinic Family Health Center',
@@ -454,7 +454,22 @@ const ALLERGY_RULES = [
   },
 ];
 
-/* Priced catalogues used by the invoice editor. */
+/* Consultation rates the doctor can change (Settings -> Fees & services).
+   The walk-in rate is deliberately NOT here: it lives on each clinic location,
+   because different sites charge differently. See doctor.locations[].fee. */
+const DEFAULT_FEES = { followUp: 350, teleconsult: 400 };
+/* Used when a location has no fee of its own. */
+const FALLBACK_WALK_IN_FEE = 500;
+
+/* The consultation rate for one encounter, from whichever source owns it. */
+const consultFee = (type, doctor, fees = DEFAULT_FEES) => {
+  if (type === 'Teleconsult') return Number(fees.teleconsult) || 0;
+  if (type === 'Appointment') return Number(fees.followUp) || 0;
+  return primaryLocation(doctor)?.fee ?? FALLBACK_WALK_IN_FEE;
+};
+
+/* Starting catalogue for the invoice editor. The doctor edits a copy held in
+   state.services; these stay as the "Reset to default" target. */
 const SERVICE_PRESETS = [
   { label: 'Consultation — new patient', price: 500 },
   { label: 'Consultation — follow-up', price: 350 },
@@ -480,6 +495,14 @@ const LAB_PRESETS = [
   { label: '12-lead ECG', price: 400 },
   { label: 'Dengue NS1 antigen', price: 950 },
 ];
+
+/* The starting catalogue, built fresh each time so nothing shares objects with
+   the constants. Used by buildSeed() and by Settings -> Reset to default. */
+const defaultServices = () =>
+  [
+    ...SERVICE_PRESETS.map((x) => ({ ...x, kind: 'service' })),
+    ...LAB_PRESETS.map((x) => ({ ...x, kind: 'lab' })),
+  ].map((x, i) => ({ ...x, id: `SV-${String(i + 1).padStart(4, '0')}` }));
 
 const PAYMENT_METHODS = [
   { id: 'Cash', icon: Banknote },
@@ -1218,7 +1241,7 @@ function buildSeed() {
         : `Consultation — ${isFollowUp ? 'follow-up' : 'new patient'} (Dr. ${doctor.name.split(' ').pop()})`,
       kind: 'service',
       qty: 1,
-      unitPrice: enc.type === 'Teleconsult' ? 400 : isFollowUp ? 350 : primaryLocation(doctor)?.fee ?? 500,
+      unitPrice: consultFee(enc.type, doctor),
     };
     const extras = (invoiceExtras[enc.id] ?? []).map((e, i) => ({ ...e, id: `IT-${enc.id}-X${i}` }));
     const drugs = enc.meds.map((m, i) => {
@@ -1522,6 +1545,9 @@ function buildSeed() {
       'Generic names are written in compliance with R.A. 6675 (Generics Act of 1988). This prescription is valid for one (1) year from the date issued, except for regulated drugs.',
   };
 
+  /* One flat, editable catalogue; `kind` is what the invoice editor tabs on. */
+  const services = defaultServices();
+
   return {
     schemaVersion: SCHEMA_VERSION,
     seededAt: new Date().toISOString(),
@@ -1538,6 +1564,8 @@ function buildSeed() {
     users,
     clinic,
     rxTemplate,
+    fees: { ...DEFAULT_FEES },
+    services,
   };
 }
 
@@ -1602,6 +1630,27 @@ function reducer(state, action) {
 
     case 'UPDATE_RX_TEMPLATE':
       return { ...state, rxTemplate: { ...state.rxTemplate, ...action.patch } };
+
+    case 'UPDATE_FEES':
+      return { ...state, fees: { ...state.fees, ...action.patch } };
+
+    /* The priced catalogue behind the invoice editor's Services and Labs tabs.
+       Changing a price here does not touch statements already raised — those
+       keep the unitPrice captured when the line was added. */
+    case 'ADD_SERVICE':
+      return { ...state, services: [...state.services, action.service] };
+
+    case 'UPDATE_SERVICE':
+      return {
+        ...state,
+        services: state.services.map((x) => (x.id === action.id ? { ...x, ...action.patch } : x)),
+      };
+
+    case 'REMOVE_SERVICE':
+      return { ...state, services: state.services.filter((x) => x.id !== action.id) };
+
+    case 'RESET_FEES':
+      return { ...state, fees: { ...DEFAULT_FEES }, services: action.services };
 
     case 'UPDATE_DOCTOR':
       return {
@@ -4864,7 +4913,7 @@ function PatientChart({ patientId, open, onClose, onCheckIn }) {
               type="button"
               onClick={() => setTab(t.id)}
               className={cx(
-                'inline-flex shrink-0 items-center justify-center gap-1.5 whitespace-nowrap rounded-md px-2 py-1.5 text-xs font-semibold transition sm:flex-1',
+                'inline-flex shrink-0 items-center justify-center gap-1.5 whitespace-nowrap rounded-md px-2.5 py-1.5 text-xs font-semibold transition',
                 tab === t.id ? 'bg-slate-900 text-white' : 'text-slate-500 hover:bg-slate-100',
               )}
             >
@@ -5406,6 +5455,229 @@ function SignatureUploader({ doctor }) {
 
 /* Practice locations. A doctor may hold clinic at several sites; exactly one is
    primary, which supplies the default room and fee for walk-ins. */
+/* Fees & services — the doctor's price list.
+
+   Two things live here. The consultation rates that are not tied to a site
+   (follow-up and teleconsult), and the priced catalogue behind the invoice
+   editor's Services and Labs tabs. The walk-in rate is deliberately absent:
+   it belongs to each clinic location, so it is shown here read-only with a
+   pointer to where it is edited.
+
+   Changing a price never rewrites a statement already raised — a line keeps
+   the unitPrice captured when it was added, and the cashier can still override
+   it per statement. */
+function FeeScheduleEditor({ doctor }) {
+  const { state, act, toast } = useClinic();
+  const fees = state.fees ?? DEFAULT_FEES;
+  const services = state.services ?? [];
+  const [adding, setAdding] = useState(null); /* 'service' | 'lab' | null */
+  const [draft, setDraft] = useState({ label: '', price: '' });
+  const [confirmReset, setConfirmReset] = useState(false);
+
+  const groups = [
+    { kind: 'service', title: 'Services', hint: 'Procedures and clinic charges.' },
+    { kind: 'lab', title: 'Laboratory & imaging', hint: 'Sent out or done in-house.' },
+  ];
+
+  const submitNew = () => {
+    const label = draft.label.trim();
+    const price = Number(draft.price);
+    if (!label) return toast('Give the charge a name.', 'warn');
+    if (!Number.isFinite(price) || price < 0) return toast('Enter a valid price.', 'warn');
+    if (services.some((x) => x.label.toLowerCase() === label.toLowerCase())) {
+      return toast(`"${label}" is already on the list.`, 'warn');
+    }
+    act({ type: 'ADD_SERVICE', service: { id: nextId('SV', services), label, price, kind: adding } });
+    setDraft({ label: '', price: '' });
+    setAdding(null);
+    return toast(`Added ${label}.`, 'success');
+  };
+
+  return (
+    <>
+      <section className="card">
+        <div className="card-head">
+          <h2 className="card-title">Consultation rates</h2>
+          <Badge tone="bg-slate-100 text-slate-500">charged at discharge</Badge>
+        </div>
+        <div className="grid gap-3 p-4 sm:grid-cols-2">
+          <Field label="Follow-up visit" hint="Used when the patient came in on an appointment.">
+            <input
+              className="input nums"
+              type="number"
+              min="0"
+              step="10"
+              value={fees.followUp ?? 0}
+              onChange={(e) => act({ type: 'UPDATE_FEES', patch: { followUp: Number(e.target.value) || 0 } })}
+            />
+          </Field>
+          <Field label="Teleconsultation" hint="Shown to the patient when they book online.">
+            <input
+              className="input nums"
+              type="number"
+              min="0"
+              step="10"
+              value={fees.teleconsult ?? 0}
+              onChange={(e) => act({ type: 'UPDATE_FEES', patch: { teleconsult: Number(e.target.value) || 0 } })}
+            />
+          </Field>
+
+          <div className="sm:col-span-2">
+            <span className="label">Walk-in, per clinic</span>
+            <ul className="divide-y divide-slate-100 rounded-lg border border-slate-200">
+              {(doctor?.locations ?? []).map((loc) => (
+                <li key={loc.id} className="flex items-center justify-between gap-3 px-3 py-2">
+                  <span className="min-w-0 truncate text-sm text-slate-700">
+                    {loc.name}
+                    {loc.primary && <span className="ml-1.5 text-[11px] text-teal-700">primary</span>}
+                  </span>
+                  <span className="nums shrink-0 text-sm font-semibold text-slate-900">{peso(loc.fee ?? 0)}</span>
+                </li>
+              ))}
+            </ul>
+            <span className="hint">
+              A walk-in is charged the rate of the clinic they are seen at. Edit these under
+              &ldquo;My details&rdquo; &rarr; Clinic locations.
+            </span>
+          </div>
+        </div>
+      </section>
+
+      <section className="card">
+        <div className="card-head">
+          <h2 className="card-title">Services &amp; laboratory</h2>
+          <Badge tone="bg-slate-100 text-slate-500">{services.length} on the list</Badge>
+        </div>
+
+        {groups.map((g) => {
+          const rows = services.filter((x) => x.kind === g.kind);
+          return (
+            <div key={g.kind} className="border-b border-slate-100 p-4 last:border-b-0">
+              <div className="mb-2 flex flex-wrap items-baseline justify-between gap-2">
+                <h3 className="label !mb-0">{g.title}</h3>
+                <span className="text-[11px] text-slate-400">{g.hint}</span>
+              </div>
+
+              <ul className="divide-y divide-slate-100 rounded-lg border border-slate-200">
+                {rows.length === 0 && (
+                  <li className="px-3 py-4 text-center text-xs text-slate-500">Nothing here yet.</li>
+                )}
+                {rows.map((row) => (
+                  <li key={row.id} className="flex items-center gap-2 px-3 py-2">
+                    <input
+                      className="input min-w-0 flex-1 !py-1.5 text-sm"
+                      value={row.label}
+                      aria-label={`Name of ${row.label}`}
+                      onChange={(e) => act({ type: 'UPDATE_SERVICE', id: row.id, patch: { label: e.target.value } })}
+                    />
+                    <input
+                      className="input nums !w-20 shrink-0 !py-1.5 text-right text-sm sm:!w-24"
+                      type="number"
+                      min="0"
+                      step="10"
+                      aria-label={`Price of ${row.label}`}
+                      value={row.price}
+                      onChange={(e) =>
+                        act({ type: 'UPDATE_SERVICE', id: row.id, patch: { price: Number(e.target.value) || 0 } })
+                      }
+                    />
+                    <button
+                      type="button"
+                      onClick={() => act({ type: 'REMOVE_SERVICE', id: row.id })}
+                      className="shrink-0 rounded text-slate-400 transition hover:bg-rose-50 hover:text-rose-600"
+                      aria-label={`Remove ${row.label}`}
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </button>
+                  </li>
+                ))}
+              </ul>
+
+              {adding === g.kind ? (
+                <div className="mt-2 flex flex-wrap items-end gap-2 rounded-lg bg-slate-50 p-3">
+                  <Field label="Name" className="min-w-0 flex-1 basis-40">
+                    <input
+                      className="input !py-1.5 text-sm"
+                      autoFocus
+                      value={draft.label}
+                      placeholder={g.kind === 'lab' ? 'e.g. Thyroid panel' : 'e.g. Suture removal'}
+                      onChange={(e) => setDraft((d) => ({ ...d, label: e.target.value }))}
+                      onKeyDown={(e) => e.key === 'Enter' && submitNew()}
+                    />
+                  </Field>
+                  <Field label="Price">
+                    <input
+                      className="input nums !w-24 !py-1.5 text-right text-sm"
+                      type="number"
+                      min="0"
+                      step="10"
+                      value={draft.price}
+                      onChange={(e) => setDraft((d) => ({ ...d, price: e.target.value }))}
+                      onKeyDown={(e) => e.key === 'Enter' && submitNew()}
+                    />
+                  </Field>
+                  <div className="flex gap-2">
+                    <button type="button" className="btn-ghost btn-sm" onClick={() => setAdding(null)}>Cancel</button>
+                    <button type="button" className="btn-primary btn-sm" onClick={submitNew}>Add</button>
+                  </div>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  className="btn-ghost btn-sm mt-2"
+                  onClick={() => {
+                    setDraft({ label: '', price: '' });
+                    setAdding(g.kind);
+                  }}
+                >
+                  <Plus className="h-3.5 w-3.5" /> Add {g.kind === 'lab' ? 'a test' : 'a service'}
+                </button>
+              )}
+            </div>
+          );
+        })}
+
+        <div className="flex items-center justify-between gap-3 border-t border-slate-100 px-4 py-3">
+          <p className="text-[11px] text-slate-500">
+            Statements already raised keep the price they were billed at.
+          </p>
+          <button type="button" className="btn-ghost btn-sm" onClick={() => setConfirmReset(true)}>
+            <RefreshCw className="h-3.5 w-3.5" /> Reset to default
+          </button>
+        </div>
+      </section>
+
+      <Modal
+        open={confirmReset}
+        onClose={() => setConfirmReset(false)}
+        title="Reset the fee schedule?"
+        subtitle="Consultation rates and the whole services list go back to the defaults"
+        footer={
+          <div className="flex justify-end gap-2">
+            <button type="button" className="btn-ghost btn-sm" onClick={() => setConfirmReset(false)}>Cancel</button>
+            <button
+              type="button"
+              className="btn-danger btn-sm"
+              onClick={() => {
+                act({ type: 'RESET_FEES', services: defaultServices() });
+                setConfirmReset(false);
+                toast('Fee schedule reset.', 'success');
+              }}
+            >
+              <RefreshCw className="h-3.5 w-3.5" /> Reset
+            </button>
+          </div>
+        }
+      >
+        <p className="p-5 text-sm text-slate-600">
+          Anything you added is removed and every price goes back to the starting figure. Per-clinic
+          walk-in fees are not affected, and statements already raised keep what they were billed.
+        </p>
+      </Modal>
+    </>
+  );
+}
+
 function LocationsEditor({ doctor, onChange }) {
   const { toast } = useClinic();
   const locations = doctor?.locations ?? [];
@@ -5623,6 +5895,29 @@ function DoctorSettings() {
   const [tab, setTab] = useState('details');
 
   const samplePatient = state.patients[0];
+  /* A walk-in paying today's rates: the consultation plus the first lab on the
+     list, so edits to either are visible on the real statement straight away. */
+  const sampleInvoice = useMemo(() => {
+    const firstLab = (state.services ?? []).find((x) => x.kind === 'lab');
+    return {
+      id: 'INV-PREVIEW',
+      date: ymd(),
+      status: 'Pending',
+      discountType: 'None',
+      items: [
+        {
+          id: 'IT-preview-C',
+          label: `Consultation — new patient (Dr. ${doctor?.name?.split(' ').pop() ?? ''})`,
+          kind: 'service',
+          qty: 1,
+          unitPrice: consultFee('Walk-in', doctor, state.fees),
+        },
+        ...(firstLab
+          ? [{ id: 'IT-preview-L', label: firstLab.label, kind: 'lab', qty: 1, unitPrice: firstLab.price }]
+          : []),
+      ],
+    };
+  }, [state.services, state.fees, doctor]);
   const setDoctor = (patch) => act({ type: 'UPDATE_DOCTOR', id: doctorId, patch });
   const setTemplate = (patch) => act({ type: 'UPDATE_RX_TEMPLATE', patch });
   const setClinic = (patch) => act({ type: 'UPDATE_CLINIC', patch });
@@ -5630,6 +5925,7 @@ function DoctorSettings() {
   const tabs = [
     { id: 'details', label: 'My details', icon: User },
     { id: 'template', label: 'Prescription template', icon: FileText },
+    { id: 'fees', label: 'Fees & services', icon: PhilippinePeso },
     { id: 'letterhead', label: 'Letterhead', icon: Hospital },
   ];
 
@@ -5668,7 +5964,7 @@ function DoctorSettings() {
                   type="button"
                   onClick={() => setTab(t.id)}
                   className={cx(
-                    'inline-flex shrink-0 items-center justify-center gap-1.5 whitespace-nowrap rounded-md px-2 py-1.5 text-xs font-semibold transition sm:flex-1',
+                    'inline-flex shrink-0 items-center justify-center gap-1.5 whitespace-nowrap rounded-md px-2.5 py-1.5 text-xs font-semibold transition',
                     tab === t.id ? 'bg-slate-900 text-white' : 'text-slate-500 hover:bg-slate-100',
                   )}
                 >
@@ -5710,6 +6006,8 @@ function DoctorSettings() {
           )}
 
           {tab === 'details' && <LocationsEditor doctor={doctor} onChange={(locations) => setDoctor({ locations })} />}
+
+          {tab === 'fees' && <FeeScheduleEditor doctor={doctor} />}
 
           {tab === 'template' && (
             <section className="card">
@@ -5828,18 +6126,28 @@ function DoctorSettings() {
           )}
         </div>
 
-        {/* Live preview of the real document component. */}
-        <section className="card overflow-hidden">
+        {/* Live preview of the real document component — the statement while the
+            rates are being edited, the prescription everywhere else. */}
+        <section className="card self-start overflow-hidden">
           <div className="card-head">
             <h2 className="card-title">Preview</h2>
-            <Badge tone="bg-slate-100 text-slate-500">sample patient &amp; medicines</Badge>
+            <Badge tone="bg-slate-100 text-slate-500">
+              {tab === 'fees' ? 'sample walk-in statement' : 'sample patient & medicines'}
+            </Badge>
           </div>
-          {/* The document is a fixed A4 width; shrink the whole thing on small
-              screens rather than letting it push the page sideways. */}
           <div className="thin-scroll max-h-[40rem] overflow-auto bg-slate-200 p-2 sm:p-4">
             <DocPreview>
               <div className="overflow-hidden rounded shadow-lg ring-1 ring-slate-300">
-                <PrescriptionDoc encounter={SAMPLE_RX_ENCOUNTER} patient={samplePatient} doctor={doctor} />
+                {tab === 'fees' ? (
+                  <ReceiptDoc
+                    invoice={sampleInvoice}
+                    patient={samplePatient}
+                    encounter={SAMPLE_RX_ENCOUNTER}
+                    doctor={doctor}
+                  />
+                ) : (
+                  <PrescriptionDoc encounter={SAMPLE_RX_ENCOUNTER} patient={samplePatient} doctor={doctor} />
+                )}
               </div>
             </DocPreview>
           </div>
@@ -6203,7 +6511,7 @@ function ConsultationWorkspace({ item, waiting, onCallIn, onDone, onOpenChart })
           : `Consultation — ${isFollowUp ? 'follow-up' : 'new patient'} (Dr. ${doctor?.name.split(' ').pop()})`,
       kind: 'service',
       qty: 1,
-      unitPrice: item.type === 'Teleconsult' ? 400 : isFollowUp ? 350 : primaryLocation(doctor)?.fee ?? 500,
+      unitPrice: consultFee(item.type, doctor, state.fees),
     };
     const drugItems = draft.meds.map((m, i) => {
       const stockItem = findBy(state.inventory, m.itemId);
@@ -7514,7 +7822,7 @@ function BookAppointment({ patient, onBooked }) {
               </p>
               <p>
                 {mode === 'Teleconsult' ? 'Teleconsult' : location?.name ?? 'In-clinic'} · estimated{' '}
-                {peso(mode === 'Teleconsult' ? 400 : location?.fee ?? 500)} consultation fee
+                {peso(mode === 'Teleconsult' ? Number(state.fees?.teleconsult) || 0 : location?.fee ?? FALLBACK_WALK_IN_FEE)} consultation fee
               </p>
               <p className="mt-0.5 text-slate-400">SMS reminders are simulated in this demo.</p>
             </div>
@@ -9114,7 +9422,8 @@ function InvoiceEditor({ invoiceId, onClose, accent = 'sky' }) {
     onClose();
   };
 
-  const presets = addKind === 'lab' ? LAB_PRESETS : addKind === 'service' ? SERVICE_PRESETS : [];
+  /* The doctor's own catalogue (Settings -> Fees & services), not the constants. */
+  const presets = (state.services ?? []).filter((x) => x.kind === addKind);
 
   return (
     <Modal
@@ -9297,11 +9606,17 @@ function InvoiceEditor({ invoiceId, onClose, accent = 'sky' }) {
               <CustomChargeForm onAdd={(line) => addLine({ ...line, kind: 'service' })} />
             ) : (
               <div className="flex flex-wrap gap-1.5">
+                {presets.length === 0 && (
+                  <p className="text-xs text-slate-500">
+                    Nothing in this catalogue yet — add one in Settings &rarr; Fees &amp; services, or use
+                    the Custom tab for a one-off charge.
+                  </p>
+                )}
                 {presets.map((p) => (
                   <button
-                    key={p.label}
+                    key={p.id}
                     type="button"
-                    onClick={() => addLine({ ...p, kind: addKind })}
+                    onClick={() => addLine({ label: p.label, price: p.price, kind: addKind })}
                     className="btn-ghost btn-sm"
                   >
                     <Plus className="h-3 w-3" /> {p.label}

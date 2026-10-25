@@ -41,7 +41,7 @@ npm run build && npm run preview   # http://localhost:4173
 | Portal | Screens |
 |---|---|
 | **Staff** | Now-serving board (one panel for the clinic), check-in (existing or new patient, triage vitals, priority lane), queue status controller, patient directory, pharmacy stock, billing and payment collection, follow-up chase list, messages |
-| **Doctor** | Daily overview with KPIs and check-ins by hour, consultation workspace (vitals, SOAP with templates, 161-code ICD-10 picker, prescribing with allergy + stock checks, patient chart on hand, hand straight to the next patient), records search, messages, pharmacy, billing, accounts, and settings for the signature block, e-signature, prescription template, letterhead and clinic locations |
+| **Doctor** | Daily overview with KPIs and check-ins by hour, consultation workspace (vitals, SOAP with templates, 161-code ICD-10 picker, prescribing with allergy + stock checks, patient chart on hand, hand straight to the next patient), records search, messages, pharmacy, billing, accounts, and settings for the signature block, e-signature, prescription template, fee schedule, letterhead and clinic locations |
 | **Patient** | Live queue position, follow-up reminders, next appointment, teleconsult waiting room, appointment booking, prescriptions and visit history, messages to their doctors |
 
 ### The main flow
@@ -82,6 +82,9 @@ syncs across tabs through the `storage` event.
   pick a nebule and the route switches to Nebulization, pick a bottle and the quantity defaults to 1.
 - **Reminders** — as Staff, open *Follow-ups*: Teresita Gonzales is overdue, Rowena Castillo is due in
   two days. Send one and switch to that patient to see it marked.
+- **Fee schedule** — as the Doctor, open *Settings* → *Fees & services*: change the follow-up rate, add
+  a service or a lab test, edit a price. The sample statement beside it redraws as you type, and the new
+  entries show up immediately in *Billing* → *Add charges*.
 - **Prescription template** — as the Doctor, open *Settings*: edit your PRC number or switch off the
   allergies box and watch the real document redraw beside you.
 - **Password reset** — as the Doctor or Staff, open *Accounts* and reset a patient. Sign in as them with

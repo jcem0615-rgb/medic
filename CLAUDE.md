@@ -175,6 +175,29 @@ persistence. Rasterizing also means an uploaded SVG could never reach the DOM. `
 wherever the clinic is identified (documents, header, login) and falls back to the default cross.
 A refused localStorage write now emits `mc-persist-error`, which the app surfaces once as a toast.
 
+## The fee schedule
+`Settings -> Fees & services` (doctor only) is the clinic's price list. Three sources, deliberately:
+
+- **`state.fees`** — `{ followUp, teleconsult }`, the rates that are not tied to a site.
+- **`doctor.locations[].fee`** — the walk-in rate, because different sites charge differently. The
+  Fees tab lists these read-only with a pointer to *My details -> Clinic locations*, so the whole
+  schedule is legible in one place without two editors fighting over one number.
+- **`state.services`** — one flat catalogue of `{ id, label, price, kind: 'service' | 'lab' }` behind the
+  invoice editor's Services and Labs tabs. `SERVICE_PRESETS` / `LAB_PRESETS` are now only the *starting*
+  values: `defaultServices()` builds the seed and is also what **Reset to default** restores.
+
+`consultFee(type, doctor, fees)` is the single resolver — teleconsult rate, follow-up rate, else the
+location's own fee (`FALLBACK_WALK_IN_FEE` if a location has none). It is used by `buildSeed()` and by
+the discharge path, so the two can never drift.
+
+**Editing a price never rewrites a statement already raised.** A line keeps the `unitPrice` captured when
+it was added, and the cashier can still override any line per statement. Adding a preset copies the
+label and price only — the catalogue `id` deliberately does not travel onto the invoice line, so deleting
+a service later cannot orphan a bill.
+
+The preview pane shows a live `ReceiptDoc` while this tab is open (a sample walk-in at today's rates)
+instead of the prescription, so a rate change is visible on the real document as it is typed.
+
 ## Billing a medicine
 The statement's **Add charges** has a `Medicine` tab (`MedicineChargePicker`): search the formulary,
 see what is on the shelf, set a quantity, and the line is added flagged to dispense. Adding the same
@@ -251,7 +274,9 @@ off-screen elements and small tap targets. It is at zero findings; keep it there
 3. **Offline sync is simulated.** Replace the counter with a Dexie/IndexedDB outbox using `client_uuid` idempotency keys.
 4. **BIR compliance.** Receipt is a billing statement / acknowledgement — no BIR-registered OR series, no CAS/POS accreditation fields, no VAT breakdown. SC/PWD handled as flat 20% of subtotal (real rules: VAT-exempt + 20%; verify OSCA/PWD ID, log ID numbers).
 5. **Placeholders:** DOH LTO number (now editable in Settings → Letterhead, still not a real licence), clinic seal, e-signature (an uploaded image, not a cryptographic signature — nothing binds it to the document or proves who applied it), teleconsult links (`meet.mediclinic.ph` is fake), QR codes (`FakeQR` draws a deterministic pattern — swap for a real QR lib encoding a signed verification URL).
-6. **Payments.** GCash/Maya/Card record the method and a reference number only — no gateway.
+6. **Payments.** GCash/Maya/Card record the method and a reference number only — no gateway. The fee
+   schedule is editable (see **The fee schedule**) but has no effective-date or history: changing a price
+   changes it from that moment, and there is no record of what it was before.
 7. **Clinical safety.** Allergy check is keyword-based (`ALLERGY_RULES`), no drug–drug interaction database, ICD list is a short curated subset.
 8. **Data Privacy Act (R.A. 10173).** No consent capture, audit log, or access logging yet — required before real patient data.
 9. **Scheduling & reminders.** Doctor schedules are display-only; booking doesn't enforce clinic days. Follow-up reminders are raised and tracked in-app, but "Send" is a simulated SMS — no gateway, no delivery receipt. Messaging has no push notification, typing state, attachments or delivery/read receipts beyond the local `read` flag.
