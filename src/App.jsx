@@ -475,12 +475,83 @@ const makeInviteToken = () =>
     .map((n) => INVITE_ALPHABET[n % INVITE_ALPHABET.length])
     .join('');
 
+/* The link carries the invite itself, not just a lookup key.
+
+   With no server there is nothing for the patient's phone to ask, so a bare
+   token is meaningless anywhere but the browser that minted it — which is the
+   one browser that will never open the link. Packing the invite into the URL is
+   what makes a sent link work at all: the patient's browser decodes it, and the
+   doctor's copy is used when it has one (so revoke and used-tracking still
+   mean something on the clinic's own device).
+
+   Base64url of a compact JSON object, chosen over a bare token for exactly that
+   reason. It is readable by anyone holding the link and carries no signature —
+   there is no key to sign with client-side. See CLAUDE.md, "Invite links". */
+const INVITE_PAYLOAD_VERSION = 1;
+
+const b64urlEncode = (text) =>
+  btoa(String.fromCharCode(...new TextEncoder().encode(text)))
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/, '');
+
+const b64urlDecode = (encoded) => {
+  const padded = encoded.replace(/-/g, '+').replace(/_/g, '/');
+  const bin = atob(padded + '='.repeat((4 - (padded.length % 4)) % 4));
+  return new TextDecoder().decode(Uint8Array.from(bin, (c) => c.charCodeAt(0)));
+};
+
+const encodeInvite = (invite) =>
+  b64urlEncode(
+    JSON.stringify({
+      v: INVITE_PAYLOAD_VERSION,
+      i: invite.id,
+      t: invite.token,
+      e: invite.expiresAt,
+      b: invite.createdBy,
+      n: invite.note,
+      c: invite.createdAt,
+    }),
+  );
+
+/* Returns an invite-shaped object, or null when the parameter is not one of
+   ours. Anything malformed is simply "not recognised" — never a crash. */
+const decodeInvite = (param) => {
+  if (!param) return null;
+  try {
+    const raw = JSON.parse(b64urlDecode(param));
+    if (raw.v !== INVITE_PAYLOAD_VERSION || !raw.i || !raw.t) return null;
+    return {
+      id: raw.i,
+      token: raw.t,
+      expiresAt: raw.e ?? '',
+      createdBy: raw.b ?? '',
+      note: raw.n ?? '',
+      createdAt: raw.c ?? '',
+      usedAt: '',
+      usedByPatientId: '',
+      usedByName: '',
+      revokedAt: '',
+    };
+  } catch {
+    return null;
+  }
+};
+
 /* The app is served from a path, not a domain root, so build the link from
    wherever it is actually running. */
-const inviteUrl = (token) => {
-  if (typeof window === 'undefined') return '';
+const inviteUrl = (invite) => {
+  if (typeof window === 'undefined' || !invite) return '';
   const { origin, pathname } = window.location;
-  return `${origin}${pathname}?${INVITE_PARAM}=${token}`;
+  return `${origin}${pathname}?${INVITE_PARAM}=${encodeInvite(invite)}`;
+};
+
+/* True when the link would only work on this machine — a localhost or file://
+   origin cannot be opened from the patient's phone. */
+const isLocalOrigin = () => {
+  if (typeof window === 'undefined') return false;
+  const { hostname, protocol } = window.location;
+  return protocol === 'file:' || ['localhost', '127.0.0.1', '0.0.0.0', '[::1]'].includes(hostname);
 };
 
 const inviteStatus = (invite, now = Date.now()) => {
@@ -489,6 +560,15 @@ const inviteStatus = (invite, now = Date.now()) => {
   if (invite.usedAt) return 'used';
   if (invite.expiresAt && new Date(invite.expiresAt).getTime() < now) return 'expired';
   return 'open';
+};
+
+/* Resolve a URL parameter to the invite to act on. The doctor's own copy wins
+   when this browser has one, so revoking and used-tracking still apply there;
+   otherwise the link speaks for itself. */
+const resolveInvite = (param, invites = []) => {
+  const payload = decodeInvite(param);
+  const known = invites.find((i) => (payload ? i.id === payload.id : i.token === param));
+  return { invite: known ?? payload, fromLink: !known && !!payload };
 };
 
 /* Consultation rates the doctor can change (Settings -> Fees & services).
@@ -1682,19 +1762,28 @@ function reducer(state, action) {
 
     /* Redeeming writes the patient, their account and the invite's audit line in
        one go, so a half-registered patient cannot exist. The reducer re-checks
-       the invite itself: a hand-crafted dispatch can't reuse a spent link. */
+       the invite itself: a hand-crafted dispatch can't reuse a spent link.
+
+       On the patient's own device the invite is not in the store at all — it
+       arrived inside the link — so it is recorded here as used rather than
+       updated. That is what makes the link single-use on the device that
+       redeemed it; across devices nothing can enforce it without a server. */
     case 'REDEEM_INVITE': {
-      const invite = (state.invites ?? []).find((i) => i.id === action.inviteId);
-      if (inviteStatus(invite, new Date(action.at).getTime()) !== 'open') return state;
+      const invites = state.invites ?? [];
+      const known = invites.find((i) => i.id === action.invite.id);
+      const subject = known ?? action.invite;
+      if (inviteStatus(subject, new Date(action.at).getTime()) !== 'open') return state;
+      const spent = {
+        ...subject,
+        usedAt: action.at,
+        usedByPatientId: action.patient.id,
+        usedByName: action.user.name,
+      };
       return {
         ...state,
         patients: [...state.patients, action.patient],
         users: [...state.users, action.user],
-        invites: state.invites.map((i) =>
-          i.id === action.inviteId
-            ? { ...i, usedAt: action.at, usedByPatientId: action.patient.id, usedByName: action.user.name }
-            : i,
-        ),
+        invites: known ? invites.map((i) => (i.id === spent.id ? spent : i)) : [...invites, spent],
       };
     }
 
@@ -2953,7 +3042,7 @@ function InvitePanel() {
   };
 
   const copy = async (invite) => {
-    const url = inviteUrl(invite.token);
+    const url = inviteUrl(invite);
     try {
       await navigator.clipboard.writeText(url);
       setCopied(invite.id);
@@ -2986,7 +3075,8 @@ function InvitePanel() {
         <div className="space-y-3 p-4">
           <p className="text-xs leading-relaxed text-slate-600">
             Send the patient a link and they fill in their own details and choose their own password —
-            no temporary password to read out. Each link works once and lapses after {INVITE_TTL_DAYS} days.
+            no temporary password to read out. It opens in whatever browser they tap it in, works once,
+            and lapses after {INVITE_TTL_DAYS} days.
           </p>
 
           <div className="flex flex-wrap items-end gap-2">
@@ -3004,11 +3094,20 @@ function InvitePanel() {
             </button>
           </div>
 
-          <p className="rounded-lg bg-amber-50 px-3 py-2 text-[11px] leading-snug text-amber-900">
-            <AlertTriangle className="mr-1 inline h-3.5 w-3.5" />
-            Demo build: there is no server, so a link can only be opened in <em>this</em> browser. On a
-            real deployment the same link would reach the patient by SMS or e-mail.
-          </p>
+          {isLocalOrigin() ? (
+            <p className="rounded-lg bg-amber-50 px-3 py-2 text-[11px] leading-snug text-amber-900">
+              <AlertTriangle className="mr-1 inline h-3.5 w-3.5" />
+              You are running this on <strong>localhost</strong>, so the link points at this machine and
+              will not open on the patient's phone. Create the invite from the deployed clinic address.
+            </p>
+          ) : (
+            <p className="rounded-lg bg-slate-50 px-3 py-2 text-[11px] leading-snug text-slate-600">
+              <Info className="mr-1 inline h-3.5 w-3.5" />
+              The link carries the invite inside it, so it opens on any phone or computer. Until there is
+              a server, a patient who registers on their own device is held there — this clinic copy will
+              not see them, and the one-time limit can only be enforced per device.
+            </p>
+          )}
         </div>
 
         <div className="overflow-x-auto border-t border-slate-100">
@@ -3104,7 +3203,7 @@ function InvitePanel() {
         {issued && (
           <div className="space-y-3 p-5">
             <div className="flex flex-wrap items-center gap-4">
-              <FakeQR value={inviteUrl(issued.token)} size={112} />
+              <FakeQR value={inviteUrl(issued)} size={112} />
               <div className="min-w-0 flex-1 space-y-1">
                 <p className="label !mb-0">Code</p>
                 <p className="nums text-xl font-bold tracking-wider text-slate-900">{issued.token}</p>
@@ -3116,7 +3215,7 @@ function InvitePanel() {
             <div>
               <p className="label">Link</p>
               <p className="break-all rounded-lg bg-slate-50 px-3 py-2 font-mono text-[11px] text-slate-700">
-                {inviteUrl(issued.token)}
+                {inviteUrl(issued)}
               </p>
             </div>
             <p className="text-[11px] leading-snug text-slate-500">
@@ -3267,7 +3366,7 @@ function InviteRegistration({ invite, onRegistered, onCancel }) {
        write spends it, but a form already open could still submit into the gap —
        so re-check against the live store before building anything. The reducer
        refuses it as well; this exists to say why rather than fail silently. */
-    if (inviteStatus(state.invites?.find((i) => i.id === invite.id)) !== 'open') {
+    if (inviteStatus(state.invites?.find((i) => i.id === invite.id) ?? invite) !== 'open') {
       setError('This invite has just been used or withdrawn. Ask the clinic for a new link.');
       return;
     }
@@ -3306,7 +3405,7 @@ function InviteRegistration({ invite, onRegistered, onCancel }) {
         passwordResetAt: '',
         ...record,
       };
-      act({ type: 'REDEEM_INVITE', inviteId: invite.id, patient, user, at: new Date().toISOString() });
+      act({ type: 'REDEEM_INVITE', invite, patient, user, at: new Date().toISOString() });
       toast(`Welcome, ${patient.firstName}.`, 'success');
       onRegistered(user);
     } catch (err) {
@@ -3408,7 +3507,7 @@ function InviteUnusable({ status, onContinue }) {
     used: ['This invite has already been used', 'An account was created with this link. Sign in with the mobile number or e-mail you registered.'],
     expired: ['This invite has lapsed', 'Invite links last ' + INVITE_TTL_DAYS + ' days. Ask the clinic for a fresh one.'],
     revoked: ['This invite was cancelled', 'The clinic withdrew this link. Ask them for a new one.'],
-    missing: ['This link is not recognised', 'It may have been issued on a different device — this demo has no server, so an invite only exists in the browser that created it.'],
+    missing: ['This link is not recognised', 'It looks damaged or incomplete — links sometimes get cut short when they are pasted. Ask the clinic to send it again.'],
   }[status] ?? ['This link cannot be used', 'Ask the clinic for a new one.'];
 
   return (
@@ -10647,7 +10746,7 @@ export default function App() {
   /* An invite link outranks the login screen: whoever opened it has no account
      yet. Dismissing it drops the token so a refresh does not reopen the form. */
   if (!currentUser && inviteToken) {
-    const invite = (state.invites ?? []).find((i) => i.token === inviteToken);
+    const { invite } = resolveInvite(inviteToken, state.invites ?? []);
     const status = inviteStatus(invite);
     return (
       <ClinicContext.Provider value={value}>

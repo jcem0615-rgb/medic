@@ -121,30 +121,43 @@ together) — the button is not rendered for staff. Both the doctor and staff ca
 staff still register patients. Hiring is the doctor's call; the front desk's job is the desk.
 
 ## Invite links
-`Accounts -> Invite a patient` (doctor-only, like hiring) issues a one-time link. The patient opens it,
-fills in their own details, **chooses their own password**, and lands in their portal signed in — so
-there is no temporary password for the desk to read out and no forced change afterwards.
+`Accounts -> Invite a patient` (doctor-only, like hiring) issues a link. The patient opens it on their
+own phone, fills in their own details, **chooses their own password**, and lands in their portal signed
+in — so there is no temporary password for the desk to read out and no forced change afterwards. The
+landing page also offers the PWA install, since that is where the link is usually opened.
 
+### The link carries the invite, not a lookup key
+This is the part to understand before changing anything here. With no server there is nothing for the
+patient's phone to ask, so a bare token would be meaningless anywhere except the browser that minted it
+— the one browser that will never open the link. `encodeInvite()` therefore packs
+`{v, i, t, e, b, n, c}` into base64url and `?invite=` carries it.
+
+`resolveInvite(param, invites)` is the single resolver and prefers the **doctor's own copy** when this
+browser has one, so revoking and used-tracking still mean something on the clinic's device; otherwise
+the link speaks for itself. `decodeInvite()` returns `null` for anything malformed, which surfaces as
+"not recognised" rather than a crash.
+
+`REDEEM_INVITE` takes the whole invite rather than an id: when the store already holds it the record is
+updated, and when it does not (the patient's phone) the spent record is **appended**. That is what makes
+a link single-use on the device that redeemed it.
+
+### What still holds and what does not
 - `state.invites[]` — `{ id, token, note, createdAt, createdBy, expiresAt, usedAt, usedByPatientId,
-  usedByName, revokedAt }`. `inviteStatus()` is the single resolver: `open | used | expired | revoked |
-  missing`.
-- The token is 12 characters from an alphabet with **no O/0 or I/1**, so it survives being read down a
-  phone. `INVITE_TTL_DAYS` is 14.
-- `inviteUrl()` builds the link from `window.location` (origin + pathname), because the app is not
-  served from a domain root. The app root reads `?invite=` **once at mount** into state; redeeming or
-  dismissing calls `clearInviteToken()`, which also `replaceState`s the parameter out of the address bar.
-- `REDEEM_INVITE` writes the patient, the account and the invite's audit line **in one dispatch**, so a
-  half-registered patient cannot exist. The reducer re-checks `inviteStatus` itself, so a hand-crafted
-  dispatch cannot spend a used link.
-- Two people can hold the same link. The parent re-renders when a cross-tab write spends it, and
-  `InviteRegistration.submit` re-checks the live store before building anything — covered by the
-  `invite` suite's two-tab race, which asserts no duplicate patient and a visible explanation.
-- The invite page also offers `InstallAppCard` (the same `useInstallPrompt` the header banner uses),
-  since the link is most often opened on the patient's phone.
+  usedByName, revokedAt }`. `inviteStatus()` resolves `open | used | expired | revoked | missing`.
+- The short `token` is 12 characters with **no O/0 or I/1** so it can be read down a phone; it is shown
+  beside the link and travels inside the payload. `INVITE_TTL_DAYS` is 14.
+- `inviteUrl()` builds from `window.location` (origin + pathname). `isLocalOrigin()` drives an amber
+  warning in the panel: a link minted on `localhost` points at that machine and will not open on a phone.
+- The app root reads `?invite=` **once at mount**; redeeming or dismissing calls `clearInviteToken()`,
+  which `replaceState`s the parameter out of the address bar.
+- Two people can hold one link. The parent re-renders when a cross-tab write spends it, and
+  `InviteRegistration.submit` re-checks the live store before building anything.
 
-**It is not a secure invitation.** There is no server, so the token is only ever checked against *this
-browser's* store — a link opened anywhere else reports "not recognised", and the UI says so in those
-words rather than pretending. Real delivery (SMS/e-mail) and real validation both wait for a backend.
+**The ceiling, stated plainly.** The payload is readable by anyone holding the link and carries **no
+signature** — there is no key to sign with client-side, so a determined person could mint their own and
+register. Single-use is enforced only on the device that redeemed it. And a patient who registers on
+their own phone is held *on that phone*: the clinic's copy never learns about them. All three need the
+same thing — a backend that issues, signs and verifies the invite (gap 1/2).
 
 ## Registering a patient creates their account
 `CheckInForm` in "New patient" mode dispatches `ADD_PATIENT` with both the patient *and* a `user`, so the
@@ -294,8 +307,9 @@ off-screen elements and small tap targets. It is at zero findings; keep it there
 1. **Auth is simulated, not secure.** Sign-in, forced password change and resets all work, but passwords
    are plain text in localStorage and nothing is enforced server-side (see **Accounts**). Real build:
    Supabase Auth with roles (doctor, staff, patient) + RLS. No session expiry, lockout or audit of
-   sign-ins either. **Invite links** have the same ceiling: the token is checked only against this
-   browser's store, and there is no way to send one — see **Invite links**.
+   sign-ins either. **Invite links** have the same ceiling: the invite travels inside the link because
+   there is nothing to ask, so it is unsigned, single-use only per device, and a patient who registers
+   on their own phone never reaches the clinic's copy — see **Invite links**.
 2. **No backend.** Everything is localStorage. Suggested: Supabase Postgres tables mirroring the state slices
    (`patients, doctors, encounters, encounter_meds, queue, appointments, inventory, invoices, invoice_items`), Realtime for the queue.
 3. **Offline sync is simulated.** Replace the counter with a Dexie/IndexedDB outbox using `client_uuid` idempotency keys.

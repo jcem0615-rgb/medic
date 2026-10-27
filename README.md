@@ -100,8 +100,10 @@ syncs across tabs through the `storage` event.
   course or add a medicine; the chart and the printed copy both record that it was amended, and the
   originally issued list is kept.
 - **Invite a patient** — as the Doctor, open *Accounts* → *Invite a patient* → *Create invite link*,
-  then copy it and open it in the same browser. The patient fills in their own details, picks their own
-  password and lands in their portal — and can install the app from the same page. The link works once.
+  then send it. The link carries the invite inside it, so it opens in whatever browser the patient taps
+  it in: they fill in their own details, pick their own password, land in their portal, and can install
+  the app from the same page. Create it from the deployed address, not `localhost` — the panel warns you
+  if you forget.
 - **Register a patient** — as Staff, check in a *New patient*. Their account is created in the same step;
   the card that appears hands you the username and temporary password to read out.
 - **Next patient** — as the Doctor, finish a consultation with *Complete & call #N* to discharge and call
