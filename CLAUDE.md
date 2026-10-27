@@ -120,6 +120,32 @@ Only the **doctor** can add staff (`ADD_STAFF`, which writes the staff record an
 together) — the button is not rendered for staff. Both the doctor and staff can *reset* a password, and
 staff still register patients. Hiring is the doctor's call; the front desk's job is the desk.
 
+## Invite links
+`Accounts -> Invite a patient` (doctor-only, like hiring) issues a one-time link. The patient opens it,
+fills in their own details, **chooses their own password**, and lands in their portal signed in — so
+there is no temporary password for the desk to read out and no forced change afterwards.
+
+- `state.invites[]` — `{ id, token, note, createdAt, createdBy, expiresAt, usedAt, usedByPatientId,
+  usedByName, revokedAt }`. `inviteStatus()` is the single resolver: `open | used | expired | revoked |
+  missing`.
+- The token is 12 characters from an alphabet with **no O/0 or I/1**, so it survives being read down a
+  phone. `INVITE_TTL_DAYS` is 14.
+- `inviteUrl()` builds the link from `window.location` (origin + pathname), because the app is not
+  served from a domain root. The app root reads `?invite=` **once at mount** into state; redeeming or
+  dismissing calls `clearInviteToken()`, which also `replaceState`s the parameter out of the address bar.
+- `REDEEM_INVITE` writes the patient, the account and the invite's audit line **in one dispatch**, so a
+  half-registered patient cannot exist. The reducer re-checks `inviteStatus` itself, so a hand-crafted
+  dispatch cannot spend a used link.
+- Two people can hold the same link. The parent re-renders when a cross-tab write spends it, and
+  `InviteRegistration.submit` re-checks the live store before building anything — covered by the
+  `invite` suite's two-tab race, which asserts no duplicate patient and a visible explanation.
+- The invite page also offers `InstallAppCard` (the same `useInstallPrompt` the header banner uses),
+  since the link is most often opened on the patient's phone.
+
+**It is not a secure invitation.** There is no server, so the token is only ever checked against *this
+browser's* store — a link opened anywhere else reports "not recognised", and the UI says so in those
+words rather than pretending. Real delivery (SMS/e-mail) and real validation both wait for a backend.
+
 ## Registering a patient creates their account
 `CheckInForm` in "New patient" mode dispatches `ADD_PATIENT` with both the patient *and* a `user`, so the
 front desk never has a second step to forget. The username is whatever they captured — e-mail or mobile —
@@ -268,7 +294,8 @@ off-screen elements and small tap targets. It is at zero findings; keep it there
 1. **Auth is simulated, not secure.** Sign-in, forced password change and resets all work, but passwords
    are plain text in localStorage and nothing is enforced server-side (see **Accounts**). Real build:
    Supabase Auth with roles (doctor, staff, patient) + RLS. No session expiry, lockout or audit of
-   sign-ins either.
+   sign-ins either. **Invite links** have the same ceiling: the token is checked only against this
+   browser's store, and there is no way to send one — see **Invite links**.
 2. **No backend.** Everything is localStorage. Suggested: Supabase Postgres tables mirroring the state slices
    (`patients, doctors, encounters, encounter_meds, queue, appointments, inventory, invoices, invoice_items`), Realtime for the queue.
 3. **Offline sync is simulated.** Replace the counter with a Dexie/IndexedDB outbox using `client_uuid` idempotency keys.

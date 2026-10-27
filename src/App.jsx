@@ -17,8 +17,9 @@ import { createPortal } from 'react-dom';
 import {
   Activity, AlertTriangle, ArrowLeft, ArrowRight, BadgeCheck, Banknote, Bell, BellRing, Boxes,
   Calendar, CalendarClock, CalendarPlus, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, ClipboardList,
-  Clock, CloudOff, CreditCard, Download, FileText, FlaskConical, Heart, Home, Hospital, Info,
-  LayoutGrid, LogIn, LogOut, Mail, MapPin, Menu, MessageSquare, Minus, Monitor, Package, PackagePlus,
+  Clock, CloudOff, Copy, CreditCard, Download, FileText, FlaskConical, Heart, Home, Hospital, Info,
+  LayoutGrid, Link2 as LinkIcon, LogIn, LogOut, Mail, MapPin, Menu, MessageSquare, Minus, Monitor,
+  Package, PackagePlus,
   PhilippinePeso, Phone, Pill, Plus, Printer, QrCode, RefreshCw, Search, Send, Settings2, Share2,
   ShieldCheck, Smartphone, Stethoscope, Syringe, Thermometer, Trash2, TrendingUp, Upload, User, UserPlus,
   Users, Video, Wallet, Wifi, WifiOff, X, Zap,
@@ -28,7 +29,7 @@ import {
 
 const STORE_KEY = 'mediclinic:v1';
 /* Bump whenever the state shape changes — older persisted state is discarded. */
-const SCHEMA_VERSION = 8;
+const SCHEMA_VERSION = 9;
 
 const CLINIC = {
   name: 'MediClinic Family Health Center',
@@ -453,6 +454,42 @@ const ALLERGY_RULES = [
     severity: 'high', note: 'Documented paracetamol allergy.',
   },
 ];
+
+/* Patient self-registration invites.
+
+   The doctor hands out a link carrying a one-time token; whoever opens it fills
+   in their own details and chooses their own password, so the front desk never
+   has to read credentials out loud.
+
+   **This is not a secure invitation.** There is no server, so the token is only
+   ever checked against this browser's own store — see CLAUDE.md, "Invite links".
+   What it does buy is the whole shape of the flow: issue, redeem once, expire,
+   revoke, and an audit line of who registered from which invite. */
+const INVITE_TTL_DAYS = 14;
+const INVITE_PARAM = 'invite';
+
+/* Unambiguous alphabet — no O/0, I/1 — so a token can be read down a phone. */
+const INVITE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+const makeInviteToken = () =>
+  Array.from(crypto.getRandomValues(new Uint8Array(12)))
+    .map((n) => INVITE_ALPHABET[n % INVITE_ALPHABET.length])
+    .join('');
+
+/* The app is served from a path, not a domain root, so build the link from
+   wherever it is actually running. */
+const inviteUrl = (token) => {
+  if (typeof window === 'undefined') return '';
+  const { origin, pathname } = window.location;
+  return `${origin}${pathname}?${INVITE_PARAM}=${token}`;
+};
+
+const inviteStatus = (invite, now = Date.now()) => {
+  if (!invite) return 'missing';
+  if (invite.revokedAt) return 'revoked';
+  if (invite.usedAt) return 'used';
+  if (invite.expiresAt && new Date(invite.expiresAt).getTime() < now) return 'expired';
+  return 'open';
+};
 
 /* Consultation rates the doctor can change (Settings -> Fees & services).
    The walk-in rate is deliberately NOT here: it lives on each clinic location,
@@ -1566,6 +1603,7 @@ function buildSeed() {
     rxTemplate,
     fees: { ...DEFAULT_FEES },
     services,
+    invites: [],
   };
 }
 
@@ -1630,6 +1668,35 @@ function reducer(state, action) {
 
     case 'UPDATE_RX_TEMPLATE':
       return { ...state, rxTemplate: { ...state.rxTemplate, ...action.patch } };
+
+    case 'CREATE_INVITE':
+      return { ...state, invites: [...(state.invites ?? []), action.invite] };
+
+    case 'REVOKE_INVITE':
+      return {
+        ...state,
+        invites: (state.invites ?? []).map((i) =>
+          i.id === action.id && !i.usedAt ? { ...i, revokedAt: action.at } : i,
+        ),
+      };
+
+    /* Redeeming writes the patient, their account and the invite's audit line in
+       one go, so a half-registered patient cannot exist. The reducer re-checks
+       the invite itself: a hand-crafted dispatch can't reuse a spent link. */
+    case 'REDEEM_INVITE': {
+      const invite = (state.invites ?? []).find((i) => i.id === action.inviteId);
+      if (inviteStatus(invite, new Date(action.at).getTime()) !== 'open') return state;
+      return {
+        ...state,
+        patients: [...state.patients, action.patient],
+        users: [...state.users, action.user],
+        invites: state.invites.map((i) =>
+          i.id === action.inviteId
+            ? { ...i, usedAt: action.at, usedByPatientId: action.patient.id, usedByName: action.user.name }
+            : i,
+        ),
+      };
+    }
 
     case 'UPDATE_FEES':
       return { ...state, fees: { ...state.fees, ...action.patch } };
@@ -2852,6 +2919,515 @@ function ForcePasswordChange({ user, onChange, onSignOut, wasReset }) {
 /* Account list with the reset action. Doctor and staff both get this. */
 const emptyStaffForm = { name: '', role: 'Receptionist', desk: '', email: '', mobile: '' };
 
+/* Invite links — the doctor's way of registering a patient without typing their
+   details or reading a temporary password down the phone. Doctor-only, like
+   hiring staff; the front desk still registers patients at check-in. */
+function InvitePanel() {
+  const { state, act, toast, currentUser } = useClinic();
+  const invites = useMemo(
+    () => [...(state.invites ?? [])].sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
+    [state.invites],
+  );
+  const [note, setNote] = useState('');
+  const [issued, setIssued] = useState(null);
+  const [revoking, setRevoking] = useState(null);
+  const [copied, setCopied] = useState('');
+
+  const create = () => {
+    const now = new Date();
+    const invite = {
+      id: nextId('INV', state.invites ?? []),
+      token: makeInviteToken(),
+      note: note.trim(),
+      createdAt: now.toISOString(),
+      createdBy: currentUser?.name ?? '',
+      expiresAt: new Date(now.getTime() + INVITE_TTL_DAYS * 86400000).toISOString(),
+      usedAt: '',
+      usedByPatientId: '',
+      usedByName: '',
+      revokedAt: '',
+    };
+    act({ type: 'CREATE_INVITE', invite });
+    setNote('');
+    setIssued(invite);
+  };
+
+  const copy = async (invite) => {
+    const url = inviteUrl(invite.token);
+    try {
+      await navigator.clipboard.writeText(url);
+      setCopied(invite.id);
+      setTimeout(() => setCopied(''), 2000);
+      toast('Invite link copied.', 'success');
+    } catch {
+      /* Clipboard needs a secure context and permission; the link is on screen
+         either way, so say so rather than failing silently. */
+      toast('Could not reach the clipboard — copy the link shown instead.', 'warn');
+    }
+  };
+
+  const tone = {
+    open: 'bg-emerald-100 text-emerald-700',
+    used: 'bg-slate-100 text-slate-600',
+    expired: 'bg-amber-100 text-amber-800',
+    revoked: 'bg-rose-100 text-rose-700',
+  };
+
+  return (
+    <>
+      <section className="card">
+        <div className="card-head">
+          <h2 className="card-title">Invite a patient</h2>
+          <Badge tone="bg-slate-100 text-slate-500">
+            {invites.filter((i) => inviteStatus(i) === 'open').length} open
+          </Badge>
+        </div>
+
+        <div className="space-y-3 p-4">
+          <p className="text-xs leading-relaxed text-slate-600">
+            Send the patient a link and they fill in their own details and choose their own password —
+            no temporary password to read out. Each link works once and lapses after {INVITE_TTL_DAYS} days.
+          </p>
+
+          <div className="flex flex-wrap items-end gap-2">
+            <Field label="Who is this for?" hint="Just a label for your list — optional." className="min-w-0 flex-1 basis-48">
+              <input
+                className="input"
+                value={note}
+                placeholder="e.g. Mrs. Reyes — referred by Dr. Cruz"
+                onChange={(e) => setNote(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && create()}
+              />
+            </Field>
+            <button type="button" className="btn-primary" onClick={create}>
+              <LinkIcon className="h-4 w-4" /> Create invite link
+            </button>
+          </div>
+
+          <p className="rounded-lg bg-amber-50 px-3 py-2 text-[11px] leading-snug text-amber-900">
+            <AlertTriangle className="mr-1 inline h-3.5 w-3.5" />
+            Demo build: there is no server, so a link can only be opened in <em>this</em> browser. On a
+            real deployment the same link would reach the patient by SMS or e-mail.
+          </p>
+        </div>
+
+        <div className="overflow-x-auto border-t border-slate-100">
+          <table className="w-full md:min-w-[640px]">
+            <thead className="bg-slate-50">
+              <tr>
+                <th className="th">Invite</th>
+                <th className="th th-wide">Issued</th>
+                <th className="th th-wide">Status</th>
+                <th className="th text-right">Link</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {invites.length === 0 && (
+                <tr>
+                  <td colSpan={4}>
+                    <EmptyState icon={LinkIcon} title="No invites yet" hint="Create one above and send it to the patient." />
+                  </td>
+                </tr>
+              )}
+              {invites.map((inv) => {
+                const st = inviteStatus(inv);
+                return (
+                  <tr key={inv.id} className="row-hover">
+                    <td className="td">
+                      <div className="nums font-semibold text-slate-900">{inv.token}</div>
+                      <div className="truncate text-xs text-slate-500">{inv.note || inv.id}</div>
+                      <div className="cell-fold">
+                        <span>{fmtDate(inv.createdAt.slice(0, 10))}</span>
+                        <Badge tone={tone[st]}>{st}</Badge>
+                      </div>
+                    </td>
+                    <td className="td td-wide text-xs">
+                      {fmtDate(inv.createdAt.slice(0, 10))}
+                      <div className="text-[10px] text-slate-400">
+                        {st === 'open' ? `lapses ${fmtDate(inv.expiresAt.slice(0, 10))}` : `by ${inv.createdBy}`}
+                      </div>
+                    </td>
+                    <td className="td td-wide">
+                      <Badge tone={tone[st]}>{st}</Badge>
+                      {inv.usedByName && <div className="mt-0.5 text-[10px] text-slate-500">{inv.usedByName}</div>}
+                    </td>
+                    <td className="td">
+                      <div className="flex flex-wrap justify-end gap-1.5">
+                        {st === 'open' ? (
+                          <>
+                            <button type="button" className="btn-ghost btn-sm" onClick={() => copy(inv)}>
+                              {copied === inv.id ? <CheckCircle2 className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+                              {copied === inv.id ? 'Copied' : 'Copy'}
+                            </button>
+                            <button type="button" className="btn-ghost btn-sm" onClick={() => setIssued(inv)}>
+                              Show
+                            </button>
+                            <button
+                              type="button"
+                              className="btn-ghost btn-sm !text-rose-600"
+                              onClick={() => setRevoking(inv)}
+                            >
+                              Revoke
+                            </button>
+                          </>
+                        ) : (
+                          <span className="text-xs text-slate-400">
+                            {st === 'used' ? `registered ${fmtDate(inv.usedAt.slice(0, 10))}` : '—'}
+                          </span>
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <Modal
+        open={!!issued}
+        onClose={() => setIssued(null)}
+        title="Invite link"
+        subtitle={issued?.note || 'Send this to the patient'}
+        footer={
+          <div className="flex justify-end gap-2">
+            <button type="button" className="btn-ghost btn-sm" onClick={() => setIssued(null)}>Done</button>
+            {issued && (
+              <button type="button" className="btn-primary btn-sm" onClick={() => copy(issued)}>
+                <Copy className="h-3.5 w-3.5" /> Copy link
+              </button>
+            )}
+          </div>
+        }
+      >
+        {issued && (
+          <div className="space-y-3 p-5">
+            <div className="flex flex-wrap items-center gap-4">
+              <FakeQR value={inviteUrl(issued.token)} size={112} />
+              <div className="min-w-0 flex-1 space-y-1">
+                <p className="label !mb-0">Code</p>
+                <p className="nums text-xl font-bold tracking-wider text-slate-900">{issued.token}</p>
+                <p className="text-[11px] text-slate-500">
+                  Lapses {fmtDate(issued.expiresAt.slice(0, 10))} · works once
+                </p>
+              </div>
+            </div>
+            <div>
+              <p className="label">Link</p>
+              <p className="break-all rounded-lg bg-slate-50 px-3 py-2 font-mono text-[11px] text-slate-700">
+                {inviteUrl(issued.token)}
+              </p>
+            </div>
+            <p className="text-[11px] leading-snug text-slate-500">
+              The QR is a placeholder pattern in this demo, not a scannable code — see CLAUDE.md gap 5.
+            </p>
+          </div>
+        )}
+      </Modal>
+
+      <Modal
+        open={!!revoking}
+        onClose={() => setRevoking(null)}
+        title="Revoke this invite?"
+        subtitle={revoking ? `${revoking.token}${revoking.note ? ` · ${revoking.note}` : ''}` : ''}
+        footer={
+          <div className="flex justify-end gap-2">
+            <button type="button" className="btn-ghost btn-sm" onClick={() => setRevoking(null)}>Cancel</button>
+            <button
+              type="button"
+              className="btn-danger btn-sm"
+              onClick={() => {
+                act({ type: 'REVOKE_INVITE', id: revoking.id, at: new Date().toISOString() });
+                setRevoking(null);
+                toast('Invite revoked.', 'success');
+              }}
+            >
+              Revoke
+            </button>
+          </div>
+        }
+      >
+        <p className="p-5 text-sm text-slate-600">
+          The link stops working immediately. Anyone who already registered with it keeps their account.
+        </p>
+      </Modal>
+    </>
+  );
+}
+
+/* Offered on the invite page: the same PWA install the header banner offers, but
+   stated for a patient rather than the front desk. There is nothing to download
+   from a store — it is a Progressive Web App, so "install" means adding this
+   page to the home screen, and it then opens like any other app. */
+function InstallAppCard() {
+  const { state } = useClinic();
+  const clinicName = state?.clinic?.name ?? CLINIC.name;
+  const { canInstall, installed, promptInstall } = useInstallPrompt();
+  const isIOS = typeof navigator !== 'undefined' && /iphone|ipad|ipod/i.test(navigator.userAgent);
+
+  if (installed) {
+    return (
+      <div className="card card-pad flex items-center gap-3">
+        <CheckCircle2 className="h-5 w-5 shrink-0 text-emerald-600" />
+        <p className="text-xs text-slate-600">
+          The app is installed on this device. Open it from your home screen next time.
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="card card-pad space-y-2.5">
+      <div className="flex items-center gap-3">
+        <span className="grid h-10 w-10 shrink-0 place-items-center rounded-lg bg-indigo-600 text-white">
+          <Download className="h-5 w-5" />
+        </span>
+        <div className="min-w-0 flex-1">
+          <h2 className="text-sm font-semibold text-slate-900">Get the app</h2>
+          <p className="text-[11px] text-slate-500">
+            Add {clinicName} to your home screen to check the queue and your prescriptions without
+            opening a browser.
+          </p>
+        </div>
+        {canInstall && (
+          <button type="button" className="btn-indigo btn-sm shrink-0" onClick={promptInstall}>
+            Install
+          </button>
+        )}
+      </div>
+
+      {!canInstall && (
+        <p className="rounded-lg bg-slate-50 px-3 py-2 text-[11px] leading-snug text-slate-600">
+          {isIOS ? (
+            <>
+              On iPhone or iPad: tap <span className="font-semibold">Share</span>, then{' '}
+              <span className="font-semibold">Add to Home Screen</span>.
+            </>
+          ) : (
+            <>
+              Your browser has not offered an install button yet. On Android Chrome, open the{' '}
+              <span className="font-semibold">⋮</span> menu and choose{' '}
+              <span className="font-semibold">Install app</span> or{' '}
+              <span className="font-semibold">Add to Home screen</span>.
+            </>
+          )}
+        </p>
+      )}
+    </div>
+  );
+}
+
+/* What an invite link opens: the patient registers themselves.
+
+   Same writes as the front desk's "New patient" check-in (ADD_PATIENT's patient
+   + user), with two differences — they choose their own password, so there is no
+   forced change afterwards, and the invite is spent in the same dispatch. */
+function InviteRegistration({ invite, onRegistered, onCancel }) {
+  const { state, act, toast } = useClinic();
+  const clinic = state?.clinic ?? CLINIC;
+  const [form, setForm] = useState({
+    firstName: '', lastName: '', dob: '', sex: 'Female',
+    mobile: '', email: '', address: '', password: '', confirm: '',
+  });
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const set = (patch) => setForm((f) => ({ ...f, ...patch }));
+
+  const submit = async (e) => {
+    e.preventDefault();
+    setError('');
+    if (!form.firstName.trim() || !form.lastName.trim() || !form.dob || !form.mobile.trim()) {
+      setError('First name, last name, birth date and mobile number are required.');
+      return;
+    }
+    /* The mobile (or e-mail) becomes the username, so it has to be unique —
+       the same check the front desk's registration makes. */
+    const clash = state.users.find(
+      (u) => matchesIdentifier(u, form.mobile) || (form.email.trim() && matchesIdentifier(u, form.email)),
+    );
+    if (clash) {
+      setError('That mobile number or e-mail is already registered. Sign in instead, or ask the clinic to reset it.');
+      return;
+    }
+    if (form.password.length < MIN_PASSWORD_LENGTH) {
+      setError(`Choose a password of at least ${MIN_PASSWORD_LENGTH} characters.`);
+      return;
+    }
+    if (form.password === DEFAULT_PASSWORD) {
+      setError('Please choose something other than the clinic default.');
+      return;
+    }
+    if (form.password !== form.confirm) {
+      setError('The two passwords do not match.');
+      return;
+    }
+
+    /* Two people can hold the same link. The parent re-renders when a cross-tab
+       write spends it, but a form already open could still submit into the gap —
+       so re-check against the live store before building anything. The reducer
+       refuses it as well; this exists to say why rather than fail silently. */
+    if (inviteStatus(state.invites?.find((i) => i.id === invite.id)) !== 'open') {
+      setError('This invite has just been used or withdrawn. Ask the clinic for a new link.');
+      return;
+    }
+
+    setBusy(true);
+    try {
+      const record = await makePasswordRecord(form.password);
+      const patient = {
+        id: nextId('P', state.patients),
+        firstName: form.firstName.trim(),
+        lastName: form.lastName.trim(),
+        sex: form.sex,
+        dob: form.dob,
+        mobile: form.mobile.trim(),
+        email: form.email.trim(),
+        civilStatus: '',
+        address: form.address.trim(),
+        philhealth: '',
+        bloodType: '',
+        allergies: [],
+        conditions: [],
+        emergency: { name: '', relation: '', mobile: '' },
+        registeredAt: ymd(),
+        registeredVia: invite.id,
+      };
+      const user = {
+        id: nextId('U', state.users),
+        kind: 'patient',
+        refId: patient.id,
+        name: patientName(patient),
+        email: patient.email,
+        mobile: patient.mobile,
+        /* They picked it themselves, so nothing to force on first sign-in. */
+        mustChangePassword: false,
+        lastLoginAt: '',
+        passwordResetAt: '',
+        ...record,
+      };
+      act({ type: 'REDEEM_INVITE', inviteId: invite.id, patient, user, at: new Date().toISOString() });
+      toast(`Welcome, ${patient.firstName}.`, 'success');
+      onRegistered(user);
+    } catch (err) {
+      /* crypto.subtle needs a secure context — same caveat as the login screen. */
+      setError(
+        /secure|subtle|crypto/i.test(String(err?.message))
+          ? 'Your browser will not hash a password over plain http. Open the clinic link over HTTPS.'
+          : 'Something went wrong creating your account. Please try again.',
+      );
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="min-h-screen bg-slate-100 px-4 py-8">
+      <div className="mx-auto w-full max-w-lg space-y-4">
+        <div className="flex flex-col items-center gap-2 text-center">
+          <ClinicMark size="h-12 w-12" />
+          <h1 className="text-lg font-bold text-slate-900">{clinic.name}</h1>
+          <p className="text-xs text-slate-500">
+            You have been invited to register{invite.createdBy ? ` by ${invite.createdBy}` : ''}.
+          </p>
+        </div>
+
+        <form className="card" onSubmit={submit}>
+          <div className="card-head">
+            <h2 className="card-title">Create your account</h2>
+            <Badge tone="bg-emerald-100 text-emerald-700">invite {invite.token}</Badge>
+          </div>
+
+          <div className="grid gap-3 p-4 sm:grid-cols-2">
+            <Field label="First name" required>
+              <input className="input" value={form.firstName} onChange={(e) => set({ firstName: e.target.value })} />
+            </Field>
+            <Field label="Last name" required>
+              <input className="input" value={form.lastName} onChange={(e) => set({ lastName: e.target.value })} />
+            </Field>
+            <Field label="Date of birth" required>
+              <input className="input" type="date" max={ymd()} value={form.dob} onChange={(e) => set({ dob: e.target.value })} />
+            </Field>
+            <Field label="Sex">
+              <select className="input" value={form.sex} onChange={(e) => set({ sex: e.target.value })}>
+                <option>Female</option>
+                <option>Male</option>
+              </select>
+            </Field>
+            <Field label="Mobile number" required hint="This is how you will sign in." className="sm:col-span-2">
+              <input className="input nums" placeholder="0917 000 0000" value={form.mobile} onChange={(e) => set({ mobile: e.target.value })} />
+            </Field>
+            <Field label="E-mail address" className="sm:col-span-2">
+              <input className="input" type="email" value={form.email} onChange={(e) => set({ email: e.target.value })} />
+            </Field>
+            <Field label="Address" className="sm:col-span-2">
+              <input className="input" value={form.address} onChange={(e) => set({ address: e.target.value })} />
+            </Field>
+
+            <Field label="Choose a password" required hint={`At least ${MIN_PASSWORD_LENGTH} characters.`}>
+              <input className="input" type="password" value={form.password} onChange={(e) => set({ password: e.target.value })} />
+            </Field>
+            <Field label="Confirm password" required>
+              <input className="input" type="password" value={form.confirm} onChange={(e) => set({ confirm: e.target.value })} />
+            </Field>
+          </div>
+
+          {error && (
+            <p role="alert" className="mx-4 mb-3 rounded-lg bg-rose-50 px-3 py-2 text-xs font-semibold text-rose-700">
+              {error}
+            </p>
+          )}
+
+          <div className="flex flex-wrap items-center justify-between gap-2 border-t border-slate-100 px-4 py-3">
+            <button type="button" className="btn-ghost btn-sm" onClick={onCancel}>
+              I already have an account
+            </button>
+            <button type="submit" className="btn-indigo" disabled={busy}>
+              {busy ? 'Creating…' : (<><UserPlus className="h-4 w-4" /> Create my account</>)}
+            </button>
+          </div>
+        </form>
+
+        <InstallAppCard />
+
+        <p className="px-2 text-center text-[11px] leading-relaxed text-slate-400">
+          Demo build — what you enter stays in this browser. Do not enter real medical information
+          (R.A. 10173).
+        </p>
+      </div>
+    </div>
+  );
+}
+
+/* Shown when a link's token is spent, lapsed, revoked or simply not from this
+   browser's store — which, with no server, is every link opened elsewhere. */
+function InviteUnusable({ status, onContinue }) {
+  const { state } = useClinic();
+  const clinic = state?.clinic ?? CLINIC;
+  const copy = {
+    used: ['This invite has already been used', 'An account was created with this link. Sign in with the mobile number or e-mail you registered.'],
+    expired: ['This invite has lapsed', 'Invite links last ' + INVITE_TTL_DAYS + ' days. Ask the clinic for a fresh one.'],
+    revoked: ['This invite was cancelled', 'The clinic withdrew this link. Ask them for a new one.'],
+    missing: ['This link is not recognised', 'It may have been issued on a different device — this demo has no server, so an invite only exists in the browser that created it.'],
+  }[status] ?? ['This link cannot be used', 'Ask the clinic for a new one.'];
+
+  return (
+    <div className="grid min-h-screen place-items-center bg-slate-100 px-4">
+      <div className="w-full max-w-sm space-y-4 text-center">
+        <div className="flex justify-center"><ClinicMark size="h-12 w-12" /></div>
+        <div className="card card-pad space-y-2">
+          <AlertTriangle className="mx-auto h-8 w-8 text-amber-500" />
+          <h1 className="text-base font-bold text-slate-900">{copy[0]}</h1>
+          <p className="text-xs leading-relaxed text-slate-600">{copy[1]}</p>
+          <button type="button" className="btn-primary mt-2 w-full" onClick={onContinue}>
+            Go to sign in
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function AccountsPanel({ accent = 'teal' }) {
   const { state, act, toast, me, role } = useClinic();
   const [query, setQuery] = useState('');
@@ -2952,6 +3528,10 @@ function AccountsPanel({ accent = 'teal' }) {
           )}
         </div>
       </div>
+
+      {/* Inviting a patient is the doctor's, like hiring — the front desk still
+          registers patients at check-in. */}
+      {canAddStaff && <InvitePanel />}
 
       <div className="card card-pad">
         <div className="relative">
@@ -9992,6 +10572,20 @@ export default function App() {
 
   const openPrint = useCallback((job) => setPrintJob(job), []);
 
+  /* ?invite=TOKEN, read once at mount. Clearing it also tidies the address bar,
+     so a shared screenshot of the URL cannot be re-used from history. */
+  const [inviteToken, setInviteToken] = useState(() => {
+    if (typeof window === 'undefined') return '';
+    return new URLSearchParams(window.location.search).get(INVITE_PARAM) ?? '';
+  });
+  const clearInviteToken = useCallback(() => {
+    setInviteToken('');
+    if (typeof window === 'undefined') return;
+    const url = new URL(window.location.href);
+    url.searchParams.delete(INVITE_PARAM);
+    window.history.replaceState({}, '', url.pathname + url.search + url.hash);
+  }, []);
+
   /* The account is the identity. Resetting the demo rebuilds the user table, so
      a session pointing at a user that no longer exists simply signs out. */
   const currentUser = session ? state.users?.find((u) => u.id === session.userId) ?? null : null;
@@ -10048,7 +10642,32 @@ export default function App() {
      deviceNotifications, outbox, swState, resetDemo, network],
   );
 
-  /* Every hook above runs unconditionally; the gate comes after them. */
+  /* Every hook above runs unconditionally; the gates come after them. */
+
+  /* An invite link outranks the login screen: whoever opened it has no account
+     yet. Dismissing it drops the token so a refresh does not reopen the form. */
+  if (!currentUser && inviteToken) {
+    const invite = (state.invites ?? []).find((i) => i.token === inviteToken);
+    const status = inviteStatus(invite);
+    return (
+      <ClinicContext.Provider value={value}>
+        {status === 'open' ? (
+          <InviteRegistration
+            invite={invite}
+            onRegistered={(user) => {
+              clearInviteToken();
+              handleSignIn(user, true);
+            }}
+            onCancel={clearInviteToken}
+          />
+        ) : (
+          <InviteUnusable status={status} onContinue={clearInviteToken} />
+        )}
+        <Toasts items={toasts} onDismiss={(id) => setToasts((list) => list.filter((t) => t.id !== id))} />
+      </ClinicContext.Provider>
+    );
+  }
+
   if (!currentUser) {
     return (
       <ClinicContext.Provider value={value}>

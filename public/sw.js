@@ -3,7 +3,7 @@
    with the cached shell as the offline fallback), cache-first for hashed static assets.
    Bump CACHE_VERSION on every release — the activate handler drops older caches. */
 
-const CACHE_VERSION = 'mediclinic-v4';
+const CACHE_VERSION = 'mediclinic-v5';
 const SHELL = '/index.html';
 const PRECACHE = [
   '/',
